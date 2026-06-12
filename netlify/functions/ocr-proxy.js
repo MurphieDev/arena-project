@@ -1,10 +1,18 @@
 // netlify/functions/ocr-proxy.js
-// This proxies the OCR.space API to avoid CORS issues in the browser
-
-const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
-
 exports.handler = async function (event) {
-  // Only allow POST
+  // Handle preflight
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      },
+      body: '',
+    };
+  }
+
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
@@ -23,23 +31,20 @@ exports.handler = async function (event) {
       };
     }
 
-    // Build form data for OCR.space
-    const formData = new URLSearchParams();
-    formData.append('url', imageUrl);
-    formData.append('apikey', 'K83807854688957');
-    formData.append('language', 'eng');
-    formData.append('isOverlayRequired', 'false');
-    formData.append('detectOrientation', 'true');
-    formData.append('scale', 'true');
-    formData.append('OCREngine', '2');
-    formData.append('isTable', 'true');
+    const params = new URLSearchParams();
+    params.append('url', imageUrl);
+    params.append('apikey', 'K83807854688957');
+    params.append('language', 'eng');
+    params.append('isOverlayRequired', 'false');
+    params.append('detectOrientation', 'true');
+    params.append('scale', 'true');
+    params.append('OCREngine', '2');
+    params.append('isTable', 'true');
 
     const response = await fetch('https://api.ocr.space/parse/image', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: formData.toString(),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
     });
 
     const data = await response.json();
@@ -60,7 +65,10 @@ exports.handler = async function (event) {
         'Access-Control-Allow-Origin': '*',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ error: 'OCR proxy failed', details: error.message }),
+      body: JSON.stringify({
+        error: 'OCR proxy failed',
+        details: error.message,
+      }),
     };
   }
 };
