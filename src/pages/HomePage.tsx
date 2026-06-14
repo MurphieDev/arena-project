@@ -4,14 +4,14 @@ import {
   Search, Heart, MessageCircle, Repeat2,
   Bookmark, Share, MoreHorizontal, Zap,
   Image, Smile, X, Plus, Video, BarChart2,
-  MapPin, Play
+MapPin, Play
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { db, auth } from '../lib/firebase';
 import {
   collection, addDoc, onSnapshot, serverTimestamp,
   query as firestoreQuery, orderBy, limit,
-  doc, setDoc, deleteDoc, getDoc
+  doc, setDoc, getDoc, updateDoc
 } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 
@@ -441,26 +441,37 @@ function PostCard({ post, currentUserId }: { post: Post; currentUserId: string |
 
   const handleLike = async () => {
     if (!currentUserId) return;
-    if (liked) {
-      await deleteDoc(doc(db, 'posts', post.id, 'likes', currentUserId));
-    } else {
-      await setDoc(doc(db, 'posts', post.id, 'likes', currentUserId), {
-        userId: currentUserId, createdAt: serverTimestamp(),
+    const newLiked = !liked;
+    setLiked(newLiked);
+    try {
+      await updateDoc(doc(db, 'posts', post.id), {
+        likes: post.likes + (newLiked ? 1 : -1),
       });
-    }
-    setLiked(l => !l);
+    } catch { setLiked(!newLiked); }
+  };
+
+  const handleRepost = async () => {
+    if (!currentUserId) return;
+    const newReposted = !reposted;
+    setReposted(newReposted);
+    try {
+      await updateDoc(doc(db, 'posts', post.id), {
+        reposts: post.reposts + (newReposted ? 1 : -1),
+      });
+    } catch { setReposted(!newReposted); }
   };
 
   const handleBookmark = async () => {
     if (!currentUserId) return;
-    if (bookmarked) {
-      await deleteDoc(doc(db, 'users', currentUserId, 'bookmarks', post.id));
-    } else {
-      await setDoc(doc(db, 'users', currentUserId, 'bookmarks', post.id), {
-        postId: post.id, createdAt: serverTimestamp(),
-      });
-    }
-    setBookmarked(b => !b);
+    const newBookmarked = !bookmarked;
+    setBookmarked(newBookmarked);
+    try {
+      if (newBookmarked) {
+        await setDoc(doc(db, 'users', currentUserId, 'bookmarks', post.id), {
+          postId: post.id, createdAt: serverTimestamp(),
+        });
+      }
+    } catch { setBookmarked(!newBookmarked); }
   };
 
   const timeAgo = (timestamp: any) => {
@@ -524,7 +535,7 @@ function PostCard({ post, currentUserId }: { post: Post; currentUserId: string |
               </div>
               <span className="text-xs">{fmt(post.comments)}</span>
             </button>
-            <button onClick={() => setReposted(r => !r)}
+            <button onClick={handleRepost}
               className={cn('flex items-center gap-1.5 transition-colors group', reposted ? 'text-green-500' : 'hover:text-green-500')}>
               <div className="p-1.5 rounded-full group-hover:bg-green-500/10 transition-colors">
                 <Repeat2 className="w-4 h-4" />
