@@ -505,9 +505,11 @@ function ChannelFeed({ ch, currentUser, onBack }: {
   };
 
   const timeAgo = (timestamp: any) => {
-    if (!timestamp) return 'Just now';
-    const date = timestamp.toDate?.() || new Date(timestamp);
+    if (!timestamp) return '';
+    const date = timestamp?.toDate ? timestamp.toDate() : timestamp?.seconds ? new Date(timestamp.seconds * 1000) : new Date(timestamp);
+    if (isNaN(date.getTime())) return '';
     const diff = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (diff < 60) return 'Just now';
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
     return `${Math.floor(diff / 86400)}d ago`;

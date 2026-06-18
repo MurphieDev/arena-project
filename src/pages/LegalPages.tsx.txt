@@ -1,0 +1,151 @@
+import { motion } from 'framer-motion';
+import { ArrowLeft } from 'lucide-react';
+
+// ── Privacy Policy ─────────────────────────────────────────────────────────
+export function PrivacyPolicyPage({ onBack }: { onBack?: () => void }) {
+  return (
+    <div className="pb-20">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-[#1f1f1f] sticky top-14 z-20 bg-black/90 backdrop-blur">
+        {onBack && (
+          <button onClick={onBack} className="p-1.5 rounded-full hover:bg-white/10">
+            <ArrowLeft className="w-5 h-5 text-white" />
+          </button>
+        )}
+        <h1 className="font-black text-white">Privacy Policy</h1>
+      </div>
+
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-4 py-6 space-y-6 max-w-2xl">
+        <p className="text-xs text-[#71767b]">Last updated: June 2026</p>
+
+        {[
+          {
+            title: '1. Information We Collect',
+            content: 'We collect information you provide directly to us, including your name, email address, and profile information when you create an account. We also collect information about your use of Arena, including tips you post, channels you subscribe to, and payments you make.'
+          },
+          {
+            title: '2. How We Use Your Information',
+            content: 'We use the information we collect to provide, maintain, and improve Arena, process transactions, send notifications, verify tip accuracy, calculate tipster win rates, and communicate with you about your account and our services.'
+          },
+          {
+            title: '3. Payment Information',
+            content: 'All payments are processed securely through Paystack. We do not store your card details. Arena only receives confirmation of successful transactions. All financial data is encrypted and handled according to PCI-DSS standards.'
+          },
+          {
+            title: '4. Data Sharing',
+            content: 'We do not sell your personal information to third parties. We may share data with service providers (Firebase, Cloudinary, Paystack, OCR.space) who assist in operating our platform. These providers are bound by confidentiality agreements.'
+          },
+          {
+            title: '5. Tipster Accuracy',
+            content: 'Arena automatically verifies prediction outcomes using third-party sports data APIs. Tipster win rates are calculated based on verified results only. This data is publicly visible on tipster profiles to ensure transparency and prevent fraud.'
+          },
+          {
+            title: '6. Data Retention',
+            content: 'We retain your account information for as long as your account is active. You may request deletion of your account and associated data at any time through Settings. Tip history and verified results are retained for platform integrity purposes.'
+          },
+          {
+            title: '7. Security',
+            content: 'We implement industry-standard security measures including Firebase Authentication, encrypted data transmission (HTTPS), and secure payment processing. However, no method of transmission over the internet is 100% secure.'
+          },
+          {
+            title: '8. Your Rights',
+            content: 'You have the right to access, update, or delete your personal information at any time. You can manage your privacy settings within the Arena app under Settings. You may also contact us to exercise your data rights.'
+          },
+          {
+            title: '9. Changes to This Policy',
+            content: 'We may update this Privacy Policy from time to time. We will notify you of any significant changes via email or a prominent notice in the app. Your continued use of Arena after changes constitutes acceptance of the updated policy.'
+          },
+          {
+            title: '10. Contact Us',
+            content: 'If you have any questions about this Privacy Policy or how we handle your data, please contact us through the Settings page or at support@arenasporting.com.'
+          },
+        ].map((section, i) => (
+          <div key={i}>
+            <h2 className="font-black text-white text-sm mb-2">{section.title}</h2>
+            <p className="text-sm text-[#71767b] leading-relaxed">{section.content}</p>
+          </div>
+        ))}
+      </motion.div>
+    </div>
+  );
+}
+
+// ── Terms of Service ───────────────────────────────────────────────────────
+export function TermsOfServicePage({ onBack }: { onBack?: () => void }) {
+  return (
+    <div className="pb-20">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-[#1f1f1f] sticky top-14 z-20 bg-black/90 backdrop-blur">
+        {onBack && (
+          <button onClick={onBack} className="p-1.5 rounded-full hover:bg-white/10">
+            <ArrowLeft className="w-5 h-5 text-white" />
+          </button>
+        )}
+        <h1 className="font-black text-white">Terms of Service</h1>
+      </div>
+
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-4 py-6 space-y-6 max-w-2xl">
+        <p className="text-xs text-[#71767b]">Last updated: June 2026</p>
+
+        <div className="bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-2xl p-4">
+          <p className="text-sm text-white font-bold mb-1">⚠️ Important Notice</p>
+          <p className="text-xs text-[#71767b]">Arena is a sports prediction platform. We do not facilitate or encourage gambling. All predictions are for entertainment and information purposes only. Arena is not responsible for any financial decisions made based on predictions posted on the platform.</p>
+        </div>
+
+        {[
+          {
+            title: '1. Acceptance of Terms',
+            content: 'By creating an account and using Arena, you agree to be bound by these Terms of Service. If you do not agree to these terms, please do not use the platform.'
+          },
+          {
+            title: '2. User Accounts',
+            content: 'You must be at least 18 years old to use Arena. You are responsible for maintaining the security of your account and password. Arena cannot and will not be liable for any loss or damage from your failure to secure your account.'
+          },
+          {
+            title: '3. Tipster Responsibilities',
+            content: 'Tipsters are responsible for the accuracy and legitimacy of their bet slips and predictions. Tipsters must not manipulate or falsify prediction history. Arena automatically verifies outcomes — any attempt to manipulate results will result in immediate account termination and forfeiture of earnings.'
+          },
+          {
+            title: '4. Subscriptions and Payments',
+            content: 'Subscription fees are charged at the rate set by the tipster at the time of purchase. All payments are final and non-refundable unless the tipster account is found to be fraudulent. Arena charges a 10% platform fee on all subscription payments. Tipster earnings are held as pending until verification is complete.'
+          },
+          {
+            title: '5. Prohibited Conduct',
+            content: 'You may not: post false or misleading predictions, create fake accounts, manipulate win rates, harass other users, share inappropriate content, attempt to circumvent payment systems, or use Arena for any unlawful purpose.'
+          },
+          {
+            title: '6. Content Ownership',
+            content: 'You retain ownership of content you post on Arena. By posting, you grant Arena a non-exclusive license to display and distribute your content on the platform. Arena reserves the right to remove any content that violates these terms.'
+          },
+          {
+            title: '7. Prediction Accuracy',
+            content: 'Arena verifies prediction outcomes using third-party sports data APIs. Verified results are final. Tipster win rates are calculated based on settled predictions only. Pending predictions are not counted until official results are confirmed.'
+          },
+          {
+            title: '8. Withdrawals',
+            content: 'Tipster earnings become eligible for withdrawal after the admin approval process. Arena processes withdrawals within 24 hours of approval. Arena reserves the right to delay or withhold withdrawals if fraud is suspected.'
+          },
+          {
+            title: '9. Termination',
+            content: 'Arena reserves the right to terminate accounts that violate these terms, engage in fraud, manipulate predictions, harass users, or engage in any conduct detrimental to the platform or its users.'
+          },
+          {
+            title: '10. Disclaimer',
+            content: 'Arena provides a platform for sports predictions. We make no guarantees about the accuracy of predictions. Past performance of a tipster does not guarantee future results. Arena is not liable for any financial losses resulting from following predictions on the platform.'
+          },
+          {
+            title: '11. Governing Law',
+            content: 'These terms are governed by the laws of Nigeria. Any disputes arising from these terms or your use of Arena will be resolved under Nigerian jurisdiction.'
+          },
+          {
+            title: '12. Contact',
+            content: 'For any questions about these terms, contact us at support@arenasporting.com or through the Settings page in the app.'
+          },
+        ].map((section, i) => (
+          <div key={i}>
+            <h2 className="font-black text-white text-sm mb-2">{section.title}</h2>
+            <p className="text-sm text-[#71767b] leading-relaxed">{section.content}</p>
+          </div>
+        ))}
+      </motion.div>
+    </div>
+  );
+}
