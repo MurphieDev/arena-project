@@ -335,7 +335,7 @@ function ChatView({ chatId, otherUserName, currentUser, onBack }: {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-56px)]">
+    <div className="flex flex-col h-[calc(100vh-56px-64px)]">
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-[#1f1f1f] bg-black/90 backdrop-blur shrink-0">
         <button onClick={onBack} className="p-1.5 rounded-full hover:bg-white/10">

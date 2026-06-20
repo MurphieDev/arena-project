@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Home, Search, Bell, Mail, User,
-  Zap, BarChart2
+  Zap, BarChart2, Target, Users, Wallet
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { db, auth } from '../lib/firebase';
@@ -83,10 +83,12 @@ export function MainLayout({ children, activePage, onNavigate }: MainLayoutProps
     { key: 'home', icon: Home, label: 'Home', show: true },
     { key: 'explore', icon: Search, label: 'Explore', show: true },
     { key: 'live', icon: Zap, label: 'Live', show: true },
-    // Dashboard ONLY for tipsters
+    { key: 'predictions', icon: Target, label: 'Tips', show: true },
+    { key: 'communities', icon: Users, label: 'Community', show: true },
     { key: 'dashboard', icon: BarChart2, label: 'Dashboard', show: isTipster },
     { key: 'notifications', icon: Bell, label: 'Alerts', show: true, badge: unreadNotifications },
-    { key: 'messages', icon: Mail, label: 'Messages', show: true, badge: unreadMessages },
+    { key: 'messages', icon: Mail, label: 'DMs', show: true, badge: unreadMessages },
+    { key: 'wallet', icon: Wallet, label: 'Wallet', show: true },
     { key: 'profile', icon: User, label: 'Profile', show: true },
   ].filter(item => item.show);
 

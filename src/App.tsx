@@ -59,8 +59,10 @@ function App() {
   }, []);
 
   const handleNavigate = (page: string) => {
-    // Block dashboard for non-tipsters
+    // Block dashboard for normal users
     if (page === 'dashboard' && userRole === 'user') return;
+    // Block admin for non-admins
+    if (page === 'admin' && userRole !== 'admin') return;
     setActivePage(page as Page);
   };
 
@@ -95,8 +97,10 @@ function App() {
       case 'settings': return <SettingsPage />;
       case 'profile': return <ProfilePage />;
       case 'notifications': return <NotificationsPage />;
-      case 'dashboard': return userRole !== 'user' ? <DashboardPage /> : <HomePage />;
-      case 'admin': return userRole === 'admin' ? <AdminPage /> : <HomePage />;
+      case 'dashboard':
+        return (userRole === 'tipster' || userRole === 'admin') ? <DashboardPage /> : <HomePage />;
+      case 'admin':
+        return userRole === 'admin' ? <AdminPage /> : <HomePage />;
       default: return <HomePage />;
     }
   };
