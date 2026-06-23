@@ -1,0 +1,14 @@
+name: Arena Tip Verification
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-tips:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger tip verification
+        run: |
+          curl -X GET https://arenadone.netlify.app/.netlify/functions/check-tips-scheduled
