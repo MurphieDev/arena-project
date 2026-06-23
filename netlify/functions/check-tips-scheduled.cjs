@@ -1,13 +1,8 @@
-// netlify/functions/check-tips-scheduled.js
-//
-// This function runs AUTOMATICALLY on Netlify's servers every 30 minutes,
-// independent of whether anyone has the Arena app open in their browser.
-//
-// It uses Firebase Admin SDK to read/write Firestore directly from the server.
+// netlify/functions/check-tips-scheduled.cjs
+// Runs every 30 minutes - checks each match individually
 
 const admin = require('firebase-admin');
 
-// ── Initialize Firebase Admin (only once) ─────────────────────────────────
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
@@ -24,7 +19,7 @@ const db = admin.firestore();
 const API_KEY = process.env.API_FOOTBALL_KEY || '71b6bd51ec2a77eee7d4a472b85436f0';
 const API_BASE = 'https://v3.football.api-sports.io';
 
-// ── Helper: call API-Football ──────────────────────────────────────────────
+// ── API call ───────────────────────────────────────────────────────────────
 async function apiCall(endpoint) {
   try {
     const res = await fetch(`${API_BASE}${endpoint}`, {
@@ -33,13 +28,87 @@ async function apiCall(endpoint) {
     const data = await res.json();
     return data.response || [];
   } catch (e) {
-    console.error('API call failed:', e.message);
+    console.error('API error:', e.message);
     return [];
   }
 }
 
-// ── Prediction checker (same logic as frontend) ────────────────────────────
-function checkPrediction(pred, homeScore, awayScore, events) {
+// ── Smart team name matching ───────────────────────────────────────────────
+function normalize(name) {
+  if (!name) return '';
+  return name.toLowerCase()
+    .replace(/\bfc\b|\bac\b|\bsc\b|\bbc\b|\bfk\b|\bsk\b/g, '')
+    .replace(/manchester/g, 'man')
+    .replace(/united/g, 'utd')
+    .replace(/\bsrl\b|\breserve\b|\bu21\b|\bu23\b/g, '')
+    .replace(/[^a-z0-9 ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function teamsMatch(apiTeam, ocrTeam) {
+  const api = normalize(apiTeam);
+  const ocr = normalize(ocrTeam);
+  if (!api || !ocr) return false;
+  if (api === ocr) return true;
+  if (api.includes(ocr) || ocr.includes(api)) return true;
+  // Word-by-word match
+  const apiWords = api.split(' ').filter(w => w.length > 2);
+  const ocrWords = ocr.split(' ').filter(w => w.length > 2);
+  const matches = ocrWords.filter(w => apiWords.includes(w));
+  return matches.length >= Math.min(1, ocrWords.length);
+}
+
+// ── Find fixture result for a single match ─────────────────────────────────
+async function checkSingleMatch(homeTeam, awayTeam) {
+  const today = new Date().toISOString().split('T')[0];
+  const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)
+    .toISOString().split('T')[0];
+
+  // Try multiple seasons
+  for (const season of [2026, 2025, 2024]) {
+    // Search by home team name
+    const fixtures = await apiCall(
+      `/fixtures?team=${encodeURIComponent(homeTeam)}&season=${season}&from=${twoWeeksAgo}&to=${today}`
+    );
+
+    for (const f of fixtures) {
+      const homeMatch = teamsMatch(f.teams.home.name, homeTeam);
+      const awayMatch = teamsMatch(f.teams.away.name, awayTeam);
+
+      if (homeMatch && awayMatch) {
+        const status = f.fixture.status.short;
+
+        // Cancelled or postponed = void
+        if (['CANC', 'PST', 'ABD', 'AWD', 'WO'].includes(status)) {
+          return { status: 'void', homeScore: 0, awayScore: 0 };
+        }
+
+        // Not started or live = still pending
+        if (['NS', 'TBD', '1H', 'HT', '2H', 'ET', 'P', 'BT', 'LIVE'].includes(status)) {
+          return { status: 'pending' };
+        }
+
+        // Finished
+        if (['FT', 'AET', 'PEN'].includes(status)) {
+          return {
+            status: 'finished',
+            homeScore: f.goals.home ?? 0,
+            awayScore: f.goals.away ?? 0,
+            fixtureId: f.fixture.id,
+          };
+        }
+      }
+    }
+  }
+
+  // Not found in API - could be lower league not covered
+  // Check if match date has passed significantly (more than 3 days)
+  return { status: 'not_found' };
+}
+
+// ── Evaluate single match prediction ──────────────────────────────────────
+function evaluatePrediction(pred, homeScore, awayScore) {
   const p = (pred || '').toLowerCase().trim();
   const total = homeScore + awayScore;
 
@@ -49,65 +118,34 @@ function checkPrediction(pred, homeScore, awayScore, events) {
   if (p === '1x') return homeScore >= awayScore;
   if (p === 'x2') return awayScore >= homeScore;
   if (p === '12') return homeScore !== awayScore;
-  if (p === 'gg' || p === 'btts' || p === 'btts yes' || p === 'both teams to score') return homeScore > 0 && awayScore > 0;
+  if (p === 'gg' || p === 'btts' || p === 'both teams to score') return homeScore > 0 && awayScore > 0;
   if (p === 'ng' || p === 'btts no' || p === 'no btts') return homeScore === 0 || awayScore === 0;
+  if (p === 'home to score' || p === 'home team to score') return homeScore > 0;
+  if (p === 'away to score' || p === 'away team to score') return awayScore > 0;
+  if (p.includes('clean sheet')) {
+    if (p.includes('home')) return awayScore === 0;
+    if (p.includes('away')) return homeScore === 0;
+  }
 
   const overMatch = p.match(/^over\s*([\d.]+)/);
   if (overMatch) return total > parseFloat(overMatch[1]);
+
   const underMatch = p.match(/^under\s*([\d.]+)/);
   if (underMatch) return total < parseFloat(underMatch[1]);
 
   const scoreMatch = p.match(/^(\d+)\s*[-:]\s*(\d+)$/);
   if (scoreMatch) return homeScore === parseInt(scoreMatch[1]) && awayScore === parseInt(scoreMatch[2]);
 
-  if (p === 'home to score' || p === 'home team to score') return homeScore > 0;
-  if (p === 'away to score' || p === 'away team to score') return awayScore > 0;
-
-  if (p.includes('clean sheet')) {
-    if (p.includes('home')) return awayScore === 0;
-    if (p.includes('away')) return homeScore === 0;
-    return homeScore === 0 || awayScore === 0;
-  }
-
-  if (p.includes('win to nil')) {
-    if (p.includes('home')) return homeScore > awayScore && awayScore === 0;
-    if (p.includes('away')) return awayScore > homeScore && homeScore === 0;
-  }
-
-  if (events && events.length > 0) {
-    const goals = events.filter(e => e.type === 'Goal' && e.detail !== 'Missed Penalty');
-
-    if (p === 'goal in first 10 minutes') return goals.some(g => g.time.elapsed <= 10);
-    if (p === 'goal in first 15 minutes') return goals.some(g => g.time.elapsed <= 15);
-    if (p === 'goal before half time') return goals.some(g => g.time.elapsed < 45);
-
-    if (p.includes('first to score') || p.includes('first team to score')) {
-      const firstGoal = [...goals].sort((a, b) => a.time.elapsed - b.time.elapsed)[0];
-      if (!firstGoal) return false;
-      if (p.includes('home')) return firstGoal.team.name.toLowerCase().includes('home');
-      if (p.includes('away')) return firstGoal.team.name.toLowerCase().includes('away');
-    }
-
-    if (p.includes('anytime')) {
-      const playerName = p.replace('anytime goal scorer', '').replace('anytime scorer', '').trim();
-      return goals.some(g => g.player.name.toLowerCase().includes(playerName));
-    }
-
-    if (p.includes('first goal scorer') || p.includes('first scorer')) {
-      const playerName = p.replace('first goal scorer', '').replace('first scorer', '').trim();
-      const firstGoal = [...goals].sort((a, b) => a.time.elapsed - b.time.elapsed)[0];
-      return firstGoal ? firstGoal.player.name.toLowerCase().includes(playerName) : false;
-    }
-  }
-
-  return false;
+  // Unknown market
+  return null;
 }
 
-// ── Main handler ─────────────────────────────────────────────────────────
-exports.handler = async function (event, context) {
-  console.log('🔄 Starting automatic tip verification...');
-  let checkedCount = 0;
-  let settledCount = 0;
+// ── Main handler ───────────────────────────────────────────────────────────
+exports.handler = async function () {
+  console.log('🔄 Tip verification started:', new Date().toISOString());
+
+  let checked = 0;
+  let settled = 0;
 
   try {
     const channelsSnap = await db.collection('channels').get();
@@ -117,131 +155,156 @@ exports.handler = async function (event, context) {
       const channelData = channelDoc.data();
       const tipsterId = channelData.ownerId;
 
+      // Get all pending tips
       const tipsSnap = await db
-        .collection('channels')
-        .doc(channelId)
-        .collection('tips')
-        .where('status', '==', 'pending')
+        .collection('channels').doc(channelId)
+        .collection('tips').where('status', '==', 'pending')
         .get();
 
       for (const tipDoc of tipsSnap.docs) {
         const tip = tipDoc.data();
-        checkedCount++;
-
         if (!tip.matches || tip.matches.length === 0) continue;
+        checked++;
 
+        const updatedMatches = [...tip.matches];
         let allSettled = true;
+        let anyLost = false;
         let allWon = true;
 
-        for (const match of tip.matches) {
-          if (!match.home || !match.away) continue;
+        // Check EACH match individually
+        for (let i = 0; i < updatedMatches.length; i++) {
+          const match = updatedMatches[i];
 
-          try {
-            const today = new Date().toISOString().split('T')[0];
-            const weekAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+          // Skip already settled matches
+          if (match.status === 'win' || match.status === 'lost' || match.status === 'void') {
+            if (match.status === 'lost') { anyLost = true; allWon = false; }
+            continue;
+          }
 
-            const fixtures = await apiCall(
-              `/fixtures?team=${encodeURIComponent(match.home)}&season=2025&from=${weekAgo}&to=${today}&status=FT`
-            );
+          const result = await checkSingleMatch(match.home, match.away);
 
-            const matchedFixture = fixtures.find(f =>
-              f.teams.home.name.toLowerCase().includes(match.home.toLowerCase()) &&
-              f.teams.away.name.toLowerCase().includes(match.away.toLowerCase())
-            );
+          if (result.status === 'pending' || result.status === 'not_found') {
+            // This match is still pending
+            allSettled = false;
+            allWon = false;
+            continue;
+          }
 
-            if (!matchedFixture) {
+          if (result.status === 'void') {
+            updatedMatches[i] = { ...match, status: 'void' };
+            continue;
+          }
+
+          if (result.status === 'finished') {
+            const prediction = match.prediction || tip.prediction || '';
+            const won = evaluatePrediction(prediction, result.homeScore, result.awayScore);
+
+            if (won === null) {
+              // Unknown market - leave pending
               allSettled = false;
               continue;
             }
 
-            const details = await apiCall(`/fixtures?id=${matchedFixture.fixture.id}`);
-            const events = details[0]?.events || [];
+            // Update this specific match status
+            updatedMatches[i] = {
+              ...match,
+              status: won ? 'win' : 'lost',
+              homeScore: result.homeScore,
+              awayScore: result.awayScore,
+            };
 
-            const homeScore = matchedFixture.goals.home ?? 0;
-            const awayScore = matchedFixture.goals.away ?? 0;
-            const prediction = match.prediction || tip.prediction || '';
-
-            const won = checkPrediction(prediction, homeScore, awayScore, events);
-            if (!won) allWon = false;
-          } catch (e) {
-            console.error('Match check error:', e.message);
-            allSettled = false;
+            if (!won) { anyLost = true; allWon = false; }
           }
         }
 
-        if (allSettled) {
-          await db
-            .collection('channels')
-            .doc(channelId)
-            .collection('tips')
-            .doc(tipDoc.id)
-            .update({ status: allWon ? 'won' : 'lost' });
+        // Update matches in Firestore (even partial updates)
+        const matchesChanged = JSON.stringify(updatedMatches) !== JSON.stringify(tip.matches);
 
-          settledCount++;
+        if (matchesChanged) {
+          // Determine overall tip status
+          let tipStatus = 'pending';
 
-          const allTipsSnap = await db
-            .collection('channels')
-            .doc(channelId)
-            .collection('tips')
-            .get();
-
-          const allTips = allTipsSnap.docs.map(d => d.data());
-          const wonCount = allTips.filter(t => t.status === 'won').length;
-          const totalSettled = allTips.filter(t => t.status !== 'pending').length;
-
-          if (totalSettled > 0) {
-            await db.collection('users').doc(tipsterId).update({
-              winRate: Math.round((wonCount / totalSettled) * 100),
-              tipsCount: allTips.length,
-              paidChannelEligible: allTips.length >= 5,
-            });
+          if (allSettled) {
+            tipStatus = anyLost ? 'lost' : 'won';
+          } else if (anyLost) {
+            // If any match lost in an accumulator, whole tip is lost
+            tipStatus = 'lost';
+            allSettled = true;
           }
 
-          await db.collection('notifications').add({
-            userId: tipsterId,
-            type: 'tip_result',
-            title: allWon ? 'Tip Won! ✅' : 'Tip Lost ❌',
-            message: `Your tip in ${channelData.name} has been verified as ${allWon ? 'WON' : 'LOST'}`,
-            read: false,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-
-          const membersSnap = await db
-            .collection('channels')
-            .doc(channelId)
-            .collection('members')
-            .get();
-
-          for (const memberDoc of membersSnap.docs) {
-            await db.collection('notifications').add({
-              userId: memberDoc.id,
-              type: 'tip_result',
-              title: allWon ? 'Tip Won! ✅' : 'Tip Lost ❌',
-              message: `A tip in ${channelData.name} has been verified as ${allWon ? 'WON' : 'LOST'}`,
-              read: false,
-              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          await db.collection('channels').doc(channelId)
+            .collection('tips').doc(tipDoc.id)
+            .update({
+              matches: updatedMatches,
+              status: tipStatus,
+              ...(allSettled ? { settledAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
             });
+
+          if (allSettled) {
+            settled++;
+
+            // Update tipster win rate
+            const allTipsSnap = await db
+              .collection('channels').doc(channelId)
+              .collection('tips').get();
+
+            const allTips = allTipsSnap.docs.map(d => d.data());
+            const wonCount = allTips.filter(t => t.status === 'won').length;
+            const lostCount = allTips.filter(t => t.status === 'lost').length;
+            const totalSettled = wonCount + lostCount;
+
+            if (totalSettled > 0 && tipsterId) {
+              await db.collection('users').doc(tipsterId).update({
+                winRate: Math.round((wonCount / totalSettled) * 100),
+                tipsCount: allTips.length,
+                paidChannelEligible: allTips.length >= 5,
+              });
+            }
+
+            // Notify tipster
+            if (tipsterId) {
+              await db.collection('notifications').add({
+                userId: tipsterId,
+                type: 'tip_result',
+                title: tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost',
+                message: `Your tip in ${channelData.name || 'your channel'} has been settled as ${tipStatus.toUpperCase()}`,
+                read: false,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+            }
+
+            // Notify subscribers
+            const membersSnap = await db
+              .collection('channels').doc(channelId)
+              .collection('members').get();
+
+            for (const memberDoc of membersSnap.docs) {
+              if (memberDoc.id === tipsterId) continue;
+              await db.collection('notifications').add({
+                userId: memberDoc.id,
+                type: 'tip_result',
+                title: tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost',
+                message: `A tip in ${channelData.name || 'a channel'} has been settled`,
+                read: false,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+            }
           }
         }
       }
     }
 
-    console.log(`✅ Done. Checked ${checkedCount} tips, settled ${settledCount}.`);
-
+    console.log(`✅ Done. Checked: ${checked}, Settled: ${settled}`);
     return {
       statusCode: 200,
-      body: JSON.stringify({
-        success: true,
-        checked: checkedCount,
-        settled: settledCount,
-        timestamp: new Date().toISOString(),
-      }),
+      body: JSON.stringify({ success: true, checked, settled }),
     };
-  } catch (error) {
-    console.error('Scheduled tip check failed:', error);
+
+  } catch (e) {
+    console.error('Fatal error:', e.message);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: error.message }),
+      body: JSON.stringify({ error: e.message }),
     };
   }
 };

@@ -657,9 +657,7 @@ function ChannelFeed({ ch, currentUser, onBack }: {
                   <p className="text-xs text-[#71767b] mt-2 italic">"{tip.analysis}"</p>
                 )}
 
-                {tip.imageUrl && (
-                  <img src={tip.imageUrl} alt="Bet slip" className="w-full rounded-xl mt-2 border border-[#1f1f1f]" />
-                )}
+
 
                 <div className="flex items-center gap-4 text-xs text-[#71767b] mt-3">
                   <button onClick={() => handleLike(tip.id)}
