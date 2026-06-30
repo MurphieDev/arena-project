@@ -128,28 +128,74 @@ function teamsMatch(a, b) {
   return wb.some(w => wa.includes(w));
 }
 
+// ── Find team ID by name (API-Football requires numeric ID, not name!) ────
+const teamIdCache = {};
+async function findTeamId(teamName) {
+  if (!teamName) return null;
+  const cacheKey = teamName.toLowerCase();
+  if (teamIdCache[cacheKey] !== undefined) return teamIdCache[cacheKey];
+
+  const results = await apiFootball(`/teams?search=${encodeURIComponent(teamName)}`);
+  if (results.length > 0) {
+    // Find best match among results
+    const best = results.find(r => teamsMatch(r?.team?.name, teamName)) || results[0];
+    const id = best?.team?.id || null;
+    teamIdCache[cacheKey] = id;
+    return id;
+  }
+  teamIdCache[cacheKey] = null;
+  return null;
+}
+
 // ── Check match result ─────────────────────────────────────────────────────
 async function checkMatch(home, away) {
   if (!home || !away) return { status: 'not_found' };
   const today = new Date().toISOString().split('T')[0];
   const twoWeeksAgo = new Date(Date.now() - 14 * 86400000).toISOString().split('T')[0];
 
-  for (const season of [2026, 2025]) {
-    const fixtures = await apiFootball(
-      `/fixtures?team=${encodeURIComponent(home)}&season=${season}&from=${twoWeeksAgo}&to=${today}`
-    );
-    for (const f of fixtures) {
-      if (teamsMatch(f?.teams?.home?.name, home) && teamsMatch(f?.teams?.away?.name, away)) {
-        const s = f?.fixture?.status?.short;
-        if (['FT', 'AET', 'PEN'].includes(s)) {
-          return { status: 'finished', homeScore: f.goals.home ?? 0, awayScore: f.goals.away ?? 0 };
+  // Step 1: Resolve team name to numeric ID (API-Football requires this)
+  const homeTeamId = await findTeamId(home);
+
+  if (homeTeamId) {
+    for (const season of [2026, 2025]) {
+      const fixtures = await apiFootball(
+        `/fixtures?team=${homeTeamId}&season=${season}&from=${twoWeeksAgo}&to=${today}`
+      );
+      for (const f of fixtures) {
+        if (teamsMatch(f?.teams?.home?.name, home) && teamsMatch(f?.teams?.away?.name, away)) {
+          const s = f?.fixture?.status?.short;
+          if (['FT', 'AET', 'PEN'].includes(s)) {
+            return { status: 'finished', homeScore: f.goals.home ?? 0, awayScore: f.goals.away ?? 0 };
+          }
+          if (['CANC', 'PST', 'ABD'].includes(s)) return { status: 'void' };
+          if (['1H', 'HT', '2H', 'ET'].includes(s)) return { status: 'live' };
+          return { status: 'pending' };
         }
-        if (['CANC', 'PST', 'ABD'].includes(s)) return { status: 'void' };
-        if (['1H', 'HT', '2H', 'ET'].includes(s)) return { status: 'live' };
-        return { status: 'pending' };
       }
     }
   }
+
+  // Fallback: try searching by away team ID too (in case home name didn't resolve well)
+  const awayTeamId = await findTeamId(away);
+  if (awayTeamId) {
+    for (const season of [2026, 2025]) {
+      const fixtures = await apiFootball(
+        `/fixtures?team=${awayTeamId}&season=${season}&from=${twoWeeksAgo}&to=${today}`
+      );
+      for (const f of fixtures) {
+        if (teamsMatch(f?.teams?.home?.name, home) && teamsMatch(f?.teams?.away?.name, away)) {
+          const s = f?.fixture?.status?.short;
+          if (['FT', 'AET', 'PEN'].includes(s)) {
+            return { status: 'finished', homeScore: f.goals.home ?? 0, awayScore: f.goals.away ?? 0 };
+          }
+          if (['CANC', 'PST', 'ABD'].includes(s)) return { status: 'void' };
+          if (['1H', 'HT', '2H', 'ET'].includes(s)) return { status: 'live' };
+          return { status: 'pending' };
+        }
+      }
+    }
+  }
+
   return { status: 'not_found' };
 }
 
