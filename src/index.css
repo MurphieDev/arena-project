@@ -2,6 +2,26 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --header-height: 3.5rem;
+  --bottom-nav-height: 4rem;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --app-bg: #050505;
+  --app-surface: #09090c;
+  --app-border: #1f1f1f;
+  --app-muted: #71767b;
+  --app-text: #e7e9ea;
+  --app-accent: #ef4444;
+}
+
+html {
+  background-color: #000000;
+  color: var(--app-text);
+  -webkit-text-size-adjust: 100%;
+  overflow-x: hidden;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -10,5 +30,56 @@
 
 body {
   background-color: #000000;
-  color: #e7e9ea;
+  color: var(--app-text);
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#root {
+  background-color: #000000;
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+@layer utilities {
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .pb-mobile-nav {
+    padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .h-app-header {
+    height: calc(var(--header-height) + env(safe-area-inset-top, 0px));
+  }
+
+  .min-h-app-header {
+    min-height: calc(var(--header-height) + env(safe-area-inset-top, 0px));
+  }
+
+  .h-app-content {
+    height: calc(100dvh - var(--header-height) - env(safe-area-inset-top, 0px));
+  }
+
+  .h-app-content-full {
+    height: calc(100dvh - env(safe-area-inset-top, 0px));
+  }
+
+  .top-app-header {
+    top: calc(var(--header-height) + env(safe-area-inset-top, 0px));
+  }
+
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
 }
