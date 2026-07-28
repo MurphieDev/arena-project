@@ -180,7 +180,11 @@ function ActionMenuItem({
 }
 
 // ── Channel Feed ──────────────────────────────────────────────
-function ChannelFeed({ ch, onBack, isTipster = false, userId = '', userName = '' }: { ch: Channel; onBack: () => void; isTipster?: boolean; userId?: string; userName?: string }) {
+function ChannelFeed({ ch, onBack, isTipster = false, userId: propUserId = '', userName: propUserName = '' }: { ch: Channel; onBack: () => void; isTipster?: boolean; userId?: string; userName?: string }) {
+  const { user: feedUser } = useAuth();
+  const feedCurrentUser = feedUser as any;
+  const userId = propUserId || feedCurrentUser?.id || feedCurrentUser?.uid || '';
+  const userName = propUserName || feedCurrentUser?.name || feedCurrentUser?.displayName || '';
   const [joined, setJoined] = useState(ch.joined);
   const [showActionMenu, setShowActionMenu] = useState(false);
   const [message, setMessage] = useState('');
@@ -240,7 +244,7 @@ function ChannelFeed({ ch, onBack, isTipster = false, userId = '', userName = ''
 
           <button
             onClick={async () => {
-              if (!userId) return;
+              if (!userId) { alert('Please sign in to join'); return; }
               if (joined) {
                 // Leave channel
                 await deleteDoc(doc(db, 'channels', ch.id, 'members', userId));
@@ -1088,6 +1092,7 @@ function Leaderboard({ onSelect }: { onSelect: (name: string) => void }) {
           id: d.id,
           name: data.displayName || 'Tipster',
           winRate: `${data.winRate || 0}%`,
+          tipsCount: data.tipsCount || 0,
           streak: data.streak || 0,
           members: data.followersCount || 0,
           badge: i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '',
@@ -1218,6 +1223,7 @@ export function PredictionsPage() {
           verified: data.verified || false,
           members: data.subscribers || 0,
           winRate: `${data.winRate || 0}%`,
+          tipsCount: data.tipsCount || 0,
           streak: data.streak || 0,
           type: data.type || 'free',
           price: data.type === 'paid' ? `₦${(data.price || 0).toLocaleString()}/${data.subscriptionDuration === 'weekly' ? 'wk' : 'mo'}` : null,
