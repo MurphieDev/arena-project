@@ -9,7 +9,7 @@ import { cn } from '../../lib/utils';
 import { db, auth } from '../../lib/firebase';
 import {
   collection, onSnapshot, query as firestoreQuery,
-  where, orderBy, doc, setDoc, deleteDoc,
+  where, orderBy, doc, setDoc, deleteDoc, getDocs,
   updateDoc, increment, serverTimestamp, getDoc
 } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -117,8 +117,13 @@ function VideoCard({ video, isActive, myId, onNext, onPrev }: {
         loop
         muted={muted}
         playsInline
+        controls={false}
         className="w-full h-full object-cover"
         onClick={togglePlay}
+        onError={(e) => {
+          console.error('Video failed to load:', video.videoUrl);
+          (e.target as HTMLVideoElement).style.display = 'none';
+        }}
       />
 
       {/* Play/Pause overlay */}
@@ -218,20 +223,40 @@ export function VideoPage() {
   }, []);
 
   useEffect(() => {
-    // Load posts that have videos
-    const unsub = onSnapshot(
-      firestoreQuery(collection(db, 'posts'), where('video', '!=', null), orderBy('video'), orderBy('createdAt', 'desc')),
-      snap => {
-        const videoList = snap.docs
-          .map(d => ({ id: d.id, ...d.data() } as VideoPost))
-          .filter(p => p.videoUrl || (p as any).video)
-          .map(p => ({ ...p, videoUrl: p.videoUrl || (p as any).video }));
-        setVideos(videoList);
+    // Try video field first, then videoUrl field
+    const loadVideos = async () => {
+      try {
+        // Query by video field
+        const [snap1, snap2] = await Promise.all([
+          getDocs(firestoreQuery(collection(db, 'posts'), where('video', '!=', null))).catch(() => ({ docs: [] })),
+          getDocs(firestoreQuery(collection(db, 'posts'), where('videoUrl', '!=', null))).catch(() => ({ docs: [] })),
+        ]);
+
+        const allDocs = [...(snap1 as any).docs, ...(snap2 as any).docs];
+        const seen = new Set();
+        const videoList = allDocs
+          .filter(d => { if (seen.has(d.id)) return false; seen.add(d.id); return true; })
+          .map(d => {
+            const data = d.data();
+            const url = data.videoUrl || data.video || '';
+            return { id: d.id, ...data, videoUrl: url };
+          })
+          .filter(p => {
+            // Filter out expired blob URLs
+            if (!p.videoUrl) return false;
+            if (p.videoUrl.startsWith('blob:')) return false;
+            return true;
+          })
+          .sort((a: any, b: any) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+
+        setVideos(videoList as VideoPost[]);
+      } catch(e) {
+        console.error('Error loading videos:', e);
+      } finally {
         setLoading(false);
-      },
-      () => setLoading(false)
-    );
-    return () => unsub();
+      }
+    };
+    loadVideos();
   }, []);
 
   const handleNext = () => setCurrentIndex(i => Math.min(i + 1, videos.length - 1));
