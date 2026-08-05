@@ -1,11 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { db } from '../../lib/firebase';
-import {
-  collection, onSnapshot, query as firestoreQuery, orderBy,
-  doc, setDoc, deleteDoc, addDoc, serverTimestamp,
-  getDoc, updateDoc, increment, getDocs, where
-} from 'firebase/firestore';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, TrendingUp, Zap, Star, Plus, X,
@@ -30,6 +24,13 @@ import { SchedulePostModal } from '../../components/modals/SchedulePostModal';
 import { SubscriberUpdateModal } from '../../components/modals/SubscriberUpdateModal';
 import { PollModal } from '../../components/modals/PollModal';
 import { PromotePredictionModal } from '../../components/modals/PromotePredictionModal';
+import { db } from '../../lib/firebase';
+import {
+  collection, onSnapshot, query as firestoreQuery,
+  orderBy, doc, setDoc, deleteDoc, getDoc, getDocs,
+  addDoc, updateDoc, increment, serverTimestamp, where
+} from 'firebase/firestore';
+import { useState as useStateImport, useEffect } from 'react';
 
 // ── Types ─────────────────────────────────────────────────────
 interface Match {
@@ -72,7 +73,6 @@ interface Channel {
   avatar?: string;
   coverImage?: string;
 }
-
 
 // ── Avatar ────────────────────────────────────────────────────
 function Avatar({ name, size = 'md', image }: { name: string; size?: 'sm' | 'md' | 'lg'; image?: string }) {
@@ -180,11 +180,10 @@ function ActionMenuItem({
 }
 
 // ── Channel Feed ──────────────────────────────────────────────
-function ChannelFeed({ ch, onBack, isTipster = false, userId: propUserId = '', userName: propUserName = '' }: { ch: Channel; onBack: () => void; isTipster?: boolean; userId?: string; userName?: string }) {
-  const { user: feedUser } = useAuth();
-  const feedCurrentUser = feedUser as any;
-  const userId = propUserId || feedCurrentUser?.id || feedCurrentUser?.uid || '';
-  const userName = propUserName || feedCurrentUser?.name || feedCurrentUser?.displayName || '';
+function ChannelFeed({ ch, onBack, isTipster = false }: { ch: Channel; onBack: () => void; isTipster?: boolean }) {
+  const { user } = useAuth();
+  const currentUser = user as any;
+  const userId = currentUser?.id || currentUser?.uid || '';
   const [joined, setJoined] = useState(ch.joined);
   const [showActionMenu, setShowActionMenu] = useState(false);
   const [message, setMessage] = useState('');
@@ -244,23 +243,25 @@ function ChannelFeed({ ch, onBack, isTipster = false, userId: propUserId = '', u
 
           <button
             onClick={async () => {
-              if (!userId) { alert('Please sign in to join'); return; }
+              if (!userId) return;
+              // Don't show join button for channel owner
+              if (ch.joined && (currentUser?.role === 'tipster' || currentUser?.role === 'admin')) return;
               if (joined) {
                 // Leave channel
+                setJoined(false);
                 await deleteDoc(doc(db, 'channels', ch.id, 'members', userId));
                 await updateDoc(doc(db, 'channels', ch.id), { subscribers: increment(-1) });
-                setJoined(false);
               } else {
                 if (ch.type === 'paid') {
                   setShowPaymentModal(true);
                 } else {
                   // Join free channel
+                  setJoined(true);
                   await setDoc(doc(db, 'channels', ch.id, 'members', userId), {
-                    userId: userId,
+                    userId,
                     joinedAt: serverTimestamp(),
                   });
                   await updateDoc(doc(db, 'channels', ch.id), { subscribers: increment(1) });
-                  setJoined(true);
                 }
               }
             }}
@@ -271,7 +272,7 @@ function ChannelFeed({ ch, onBack, isTipster = false, userId: propUserId = '', u
                 : 'bg-white text-black hover:bg-white/90'
             )}
           >
-            {joined ? 'Joined ✓' : isTipster ? (ch.type === 'paid' ? `Join · ${ch.price}` : 'Join Free') : 'Join'}
+            {joined ? 'Joined ✓' : ch.type === 'paid' ? `Join · ${ch.price}` : 'Join Free'}
           </button>
         </div>
 
@@ -369,12 +370,12 @@ function ChannelFeed({ ch, onBack, isTipster = false, userId: propUserId = '', u
                 onChange={e => setMessage(e.target.value)}
                 onKeyDown={async e => {
                   if (e.key === 'Enter' && message.trim() && userId) {
-                    const msg = message.trim();
+                    const text = message.trim();
                     setMessage('');
                     await addDoc(collection(db, 'channels', ch.id, 'messages'), {
                       senderId: userId,
-                      senderName: userName,
-                      text: msg,
+                      senderName: currentUser?.name || currentUser?.displayName || 'Tipster',
+                      text,
                       createdAt: serverTimestamp(),
                     });
                   }
@@ -398,15 +399,16 @@ function ChannelFeed({ ch, onBack, isTipster = false, userId: propUserId = '', u
             {/* Post Button */}
             <button
               onClick={async () => {
-                if (!message.trim() || !userId) return;
-                const msg = message.trim();
-                setMessage('');
-                await addDoc(collection(db, 'channels', ch.id, 'messages'), {
-                  senderId: userId,
-                  senderName: userName,
-                  text: msg,
-                  createdAt: serverTimestamp(),
-                });
+                if (message.trim() && userId) {
+                  const text = message.trim();
+                  setMessage('');
+                  await addDoc(collection(db, 'channels', ch.id, 'messages'), {
+                    senderId: userId,
+                    senderName: currentUser?.name || currentUser?.displayName || 'Tipster',
+                    text,
+                    createdAt: serverTimestamp(),
+                  });
+                }
               }}
               className={cn(
                 'w-10 h-10 flex items-center justify-center rounded-xl transition-all shrink-0',
@@ -515,16 +517,25 @@ function ChannelFeed({ ch, onBack, isTipster = false, userId: propUserId = '', u
         onClose={() => setShowCreatePredictionModal(false)}
         onSubmit={async (data) => {
           if (userId) {
-            await addDoc(collection(db, 'channels', ch.id, 'tips'), {
-              ...data,
-              tipsterId: userId,
-              tipsterName: userName,
-              status: 'pending',
-              likesCount: 0,
-              commentsCount: 0,
-              source: 'manual',
-              createdAt: serverTimestamp(),
-            });
+            try {
+              const cleanData: Record<string, any> = {
+                tipsterId: userId,
+                tipsterName: currentUser?.name || currentUser?.displayName || '',
+                status: 'pending',
+                likesCount: 0,
+                commentsCount: 0,
+                source: 'manual',
+                createdAt: serverTimestamp(),
+              };
+              for (const key of Object.keys(data)) {
+                const val = data[key];
+                if (val !== undefined && val !== null && !(val instanceof File)) {
+                  cleanData[key] = val;
+                }
+              }
+              await addDoc(collection(db, 'channels', ch.id, 'tips'), cleanData);
+              await updateDoc(doc(db, 'users', userId), { tipsCount: increment(1) });
+            } catch(e) { console.error('Error posting prediction:', e); }
           }
           setShowCreatePredictionModal(false);
         }}
@@ -556,15 +567,30 @@ function ChannelFeed({ ch, onBack, isTipster = false, userId: propUserId = '', u
         onClose={() => setShowBettingSlipModal(false)}
         onSubmit={async (data) => {
           if (userId) {
-            await addDoc(collection(db, 'channels', ch.id, 'tips'), {
-              ...data,
-              tipsterId: userId,
-              tipsterName: userName,
-              status: 'pending',
-              likesCount: 0,
-              source: 'betslip',
-              createdAt: serverTimestamp(),
-            });
+            try {
+              const tipData: Record<string, any> = {
+                matches: (data.matches || []).map((m: any) => ({
+                  home: m.home || '', away: m.away || '',
+                  odds: m.odds || '', prediction: m.prediction || '',
+                  status: 'pending',
+                })),
+                totalOdds: String(data.totalOdds || '0'),
+                bookingCode: data.bookingCode || '',
+                platform: data.platform || 'betslip',
+                tipsterId: userId,
+                tipsterName: currentUser?.name || currentUser?.displayName || '',
+                status: 'pending',
+                likesCount: 0,
+                commentsCount: 0,
+                source: 'betslip',
+                createdAt: serverTimestamp(),
+              };
+              if (data.imageUrl && typeof data.imageUrl === 'string') {
+                tipData.imageUrl = data.imageUrl;
+              }
+              await addDoc(collection(db, 'channels', ch.id, 'tips'), tipData);
+              await updateDoc(doc(db, 'users', userId), { tipsCount: increment(1) });
+            } catch(e) { console.error('Error posting tip:', e); }
           }
           setShowBettingSlipModal(false);
         }}
@@ -1076,16 +1102,10 @@ function AddModal({ onClose }: { onClose: () => void }) {
 // ── Leaderboard ───────────────────────────────────────────────
 function Leaderboard({ onSelect }: { onSelect: (name: string) => void }) {
   const [tipsters, setTipsters] = useState<any[]>([]);
-  const [_loadingTipsters, _setLoadingTipsters] = useState(true);
 
   useEffect(() => {
-    const q = firestoreQuery(
-      collection(db, 'users'),
-      where('role', '==', 'tipster'),
-      orderBy('winRate', 'desc')
-    );
-    const unsub = onSnapshot(q, snapshot => {
-      const list = snapshot.docs.map((d, i) => {
+    getDocs(firestoreQuery(collection(db, 'users'), where('role', '==', 'tipster'), orderBy('winRate', 'desc'))).then(snap => {
+      setTipsters(snap.docs.map((d, i) => {
         const data = d.data();
         return {
           rank: i + 1,
@@ -1097,10 +1117,8 @@ function Leaderboard({ onSelect }: { onSelect: (name: string) => void }) {
           badge: i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '',
           avatar: data.profilePicture || undefined,
         };
-      });
-      setTipsters(list);
-    });
-    return () => unsub();
+      }));
+    }).catch(() => {});
   }, []);
 
   return (
@@ -1158,29 +1176,25 @@ export function PredictionsPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [tab, setTab] = useState<'channels' | 'leaderboard'>('channels');
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [loadingChannels, setLoadingChannels] = useState(true);
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const { setShowDetailView } = useDetailView();
   const { user } = useAuth();
   const currentUser = user as any;
   const userId = currentUser?.id || currentUser?.uid || '';
-  const userName = currentUser?.name || currentUser?.displayName || '';
   const isTipster = currentUser?.role === 'tipster' || currentUser?.role === 'admin';
-
 
   // Load real channels from Firestore
   useEffect(() => {
+    if (!userId) return;
     const q = firestoreQuery(collection(db, 'channels'), orderBy('createdAt', 'desc'));
-    const unsub = onSnapshot(q, async snapshot => {
-      const channelList: Channel[] = [];
+    const unsub = onSnapshot(q, async (snapshot) => {
+      const list: Channel[] = [];
       for (const d of snapshot.docs) {
         const data = d.data();
-        // Check if current user is a member
-        let joined = false;
-        if (userId) {
-          const memberDoc = await getDoc(doc(db, 'channels', d.id, 'members', userId));
-          joined = memberDoc.exists();
-        }
+        // Check if current user is member
+        const memberDoc = await getDoc(doc(db, 'channels', d.id, 'members', userId));
+        const isJoined = memberDoc.exists() || data.ownerId === userId;
         // Get tips for this channel
         const tipsSnap = await getDocs(
           firestoreQuery(collection(db, 'channels', d.id, 'tips'), orderBy('createdAt', 'desc'))
@@ -1191,54 +1205,48 @@ export function PredictionsPage() {
             home: m.home || '',
             away: m.away || '',
             odds: m.odds || '',
-            status: m.status || 'pending',
+            status: m.status as 'win' | 'lost' | 'pending',
           }));
-          const wins = matches.filter((m: any) => m.status === 'win').length;
-          const losses = matches.filter((m: any) => m.status === 'lost').length;
-          const pending = matches.filter((m: any) => m.status === 'pending').length;
-          const timeAgo = (ts: any) => {
-            if (!ts) return 'Just now';
-            const date = ts?.toDate ? ts.toDate() : new Date(ts?.seconds * 1000 || ts);
-            const diff = Math.floor((Date.now() - date.getTime()) / 1000);
-            if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-            if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-            return `${Math.floor(diff / 86400)}d ago`;
-          };
           return {
             id: td.id,
-            code: tip.bookingCode || tip.code || td.id.slice(0, 8).toUpperCase(),
-            time: timeAgo(tip.createdAt),
+            code: tip.bookingCode || td.id.slice(0, 8).toUpperCase(),
+            time: (() => {
+              const date = tip.createdAt?.toDate?.() || new Date();
+              const diff = Math.floor((Date.now() - date.getTime()) / 1000);
+              return diff < 3600 ? `${Math.floor(diff / 60)}m ago` : diff < 86400 ? `${Math.floor(diff / 3600)}h ago` : `${Math.floor(diff / 86400)}d ago`;
+            })(),
             matches,
-            total: parseFloat(tip.totalOdds || tip.odds || '0'),
-            wins, losses, pending,
-            reactions: tip.reactions || { like: tip.likesCount || 0, heart: 0, fire: 0, laugh: 0, wow: 0 },
+            total: parseFloat(tip.totalOdds || '0'),
+            wins: matches.filter((m: any) => m.status === 'win').length,
+            losses: matches.filter((m: any) => m.status === 'lost').length,
+            pending: matches.filter((m: any) => m.status === 'pending').length,
+            reactions: { like: tip.likesCount || 0, heart: 0, fire: 0, laugh: 0, wow: 0 },
           };
         });
-
-        channelList.push({
+        list.push({
           id: d.id,
           name: data.name || 'Channel',
-          handle: `@${(data.name || 'channel').toLowerCase().replace(/\s/g, '')}`,
+          handle: `@${(data.name || '').toLowerCase().replace(/\s/g, '')}`,
           verified: data.verified || false,
           members: data.subscribers || 0,
           winRate: `${data.winRate || 0}%`,
           streak: data.streak || 0,
           type: data.type || 'free',
-          price: data.type === 'paid' ? `₦${(data.price || 0).toLocaleString()}/${data.subscriptionDuration === 'weekly' ? 'wk' : 'mo'}` : null,
-          lastPost: feed[0]?.time || 'No posts yet',
-          lastMessage: feed[0]?.matches?.[0] ? `${feed[0].matches[0].home} vs ${feed[0].matches[0].away}` : 'No tips yet',
+          price: data.type === 'paid' ? `₦${(data.price || 0).toLocaleString()}/mo` : null,
+          lastPost: feed[0]?.time || 'No posts',
+          lastMessage: feed[0] ? `${feed[0].matches[0]?.home || ''} vs ${feed[0].matches[0]?.away || ''}` : 'No tips yet',
           unread: 0,
-          joined,
+          joined: isJoined,
           feed,
           bio: data.bio || '',
           sports: data.sports || [],
-          creationDate: data.createdAt?.toDate ? data.createdAt.toDate().toLocaleDateString('en', { month: 'short', year: 'numeric' }) : '',
+          creationDate: data.createdAt?.toDate?.()?.toLocaleDateString('en', { month: 'short', year: 'numeric' }) || '',
           avatar: data.avatar || undefined,
           coverImage: data.coverImage || undefined,
         });
       }
-      setChannels(channelList);
-      setLoadingChannels(false);
+      setChannels(list);
+      setLoading(false);
     });
     return () => unsub();
   }, [userId]);
@@ -1320,7 +1328,7 @@ export function PredictionsPage() {
         {tab === 'channels' && (
           <motion.div key="channels" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <div className="flex items-center gap-3 px-4 py-2 border-b border-[#1f1f1f]">
-              <span className="text-[10px] text-[#71767b]">{loadingChannels ? "Loading..." : `${channels.length} channels`}</span>
+              <span className="text-[10px] text-[#71767b]">{loading ? 'Loading...' : `${channels.length} channels`}</span>
               <span className="text-[10px] text-green-400">{channels.filter(c => c.joined).length} joined</span>
               <span className="text-[10px] text-[#71767b]">{channels.filter(c => c.type === 'free').length} free</span>
             </div>
