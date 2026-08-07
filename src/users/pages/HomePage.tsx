@@ -117,12 +117,30 @@ function PostModal({ onClose, onPost, onOpenPoll }: {
     reader.readAsDataURL(file);
   };
 
-  const handleVideoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleVideoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setImagePreview(null);
     setVideoName(file.name);
-    setVideoPreview(URL.createObjectURL(file));
+    // Show local preview immediately
+    const localUrl = URL.createObjectURL(file);
+    setVideoPreview(localUrl);
+    // Upload to Cloudinary for permanent URL
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('upload_preset', 'arena_videos');
+      const res = await fetch('https://api.cloudinary.com/v1_1/dqkjsrjeh/video/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (data.secure_url) {
+        setVideoPreview(data.secure_url);
+      }
+    } catch (e) {
+      console.error('Video upload failed:', e);
+    }
   };
 
   const clearMedia = () => { setImagePreview(null); setVideoPreview(null); setVideoName(''); };

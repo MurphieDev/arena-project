@@ -5,6 +5,9 @@ import { useNavigate, useLocation, Routes, Route, Navigate } from 'react-router-
 import { Home, Zap, Target, Plus, User } from 'lucide-react';
 import { useAuth } from '../auth/hooks/AuthContext';
 import { useDetailView } from '../contexts/DetailViewContext';
+import { db, auth } from '../lib/firebase';
+import { collection, query as firestoreQuery, where, onSnapshot } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { cn } from '../lib/utils';
 import { RouteGuard } from '../middleware/guards/RouteGuards';
 import { Header } from '../layout/Header';
@@ -49,6 +52,7 @@ function MobileBottomNav({ visible }: { visible: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { showDetailView } = useDetailView();
+  const { unreadMessages: realUnreadMessages, unreadNotifications: realUnreadNotifications } = useUnreadCounts();
 
   // Pages where bottom nav should NOT appear at all
   const hideOnPaths = ['/auth', '/auth/otp', '/admin'];
@@ -132,6 +136,7 @@ const MainLayout: React.FC = () => {
 
   const location = useLocation();
   const { showDetailView } = useDetailView();
+  const { unreadMessages: realUnreadMessages, unreadNotifications: realUnreadNotifications } = useUnreadCounts();
 
   const hideMobileNavAndHeaderPaths = [
     '/messages',

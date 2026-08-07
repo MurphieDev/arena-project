@@ -38,6 +38,8 @@ interface Match {
   away: string;
   odds: string;
   status: 'win' | 'lost' | 'pending';
+  matchTime?: string;
+  prediction?: string;
 }
 
 interface FeedPost {
@@ -50,6 +52,8 @@ interface FeedPost {
   losses: number;
   pending: number;
   reactions: { like: number; heart: number; fire: number; laugh: number; wow: number };
+  likesCount: number;
+  commentsCount: number;
 }
 
 interface Channel {
@@ -66,6 +70,7 @@ interface Channel {
   lastMessage: string;
   unread: number;
   joined: boolean;
+  ownerId?: string;
   feed: FeedPost[];
   bio: string;
   sports: string[];
@@ -244,10 +249,10 @@ function ChannelFeed({ ch, onBack, isTipster = false }: { ch: Channel; onBack: (
           <button
             onClick={async () => {
               if (!userId) return;
-              // Don't show join button for channel owner
-              if (ch.joined && (currentUser?.role === 'tipster' || currentUser?.role === 'admin')) return;
+              // Channel owner doesn't need to join
+              const isOwner = (ch as any).ownerId === userId;
+              if (isOwner) return;
               if (joined) {
-                // Leave channel
                 setJoined(false);
                 await deleteDoc(doc(db, 'channels', ch.id, 'members', userId));
                 await updateDoc(doc(db, 'channels', ch.id), { subscribers: increment(-1) });
@@ -255,7 +260,6 @@ function ChannelFeed({ ch, onBack, isTipster = false }: { ch: Channel; onBack: (
                 if (ch.type === 'paid') {
                   setShowPaymentModal(true);
                 } else {
-                  // Join free channel
                   setJoined(true);
                   await setDoc(doc(db, 'channels', ch.id, 'members', userId), {
                     userId,
@@ -272,7 +276,7 @@ function ChannelFeed({ ch, onBack, isTipster = false }: { ch: Channel; onBack: (
                 : 'bg-white text-black hover:bg-white/90'
             )}
           >
-            {joined ? 'Joined ✓' : ch.type === 'paid' ? `Join · ${ch.price}` : 'Join Free'}
+            {(ch as any).ownerId === userId ? 'Your Channel' : joined ? 'Joined ✓' : ch.type === 'paid' ? `Join · ${ch.price}` : 'Join Free'}
           </button>
         </div>
 
@@ -1175,6 +1179,7 @@ export function PredictionsPage() {
   const [query, setQuery] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [tab, setTab] = useState<'channels' | 'leaderboard'>('channels');
+  const [channelTab, setChannelTab] = useState<'my' | 'explore'>('my');
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
@@ -1215,12 +1220,21 @@ export function PredictionsPage() {
               const diff = Math.floor((Date.now() - date.getTime()) / 1000);
               return diff < 3600 ? `${Math.floor(diff / 60)}m ago` : diff < 86400 ? `${Math.floor(diff / 3600)}h ago` : `${Math.floor(diff / 86400)}d ago`;
             })(),
-            matches,
+            matches: (tip.matches || []).map((m: any) => ({
+              home: m.home || '',
+              away: m.away || '',
+              odds: m.odds || '',
+              status: (m.status || 'pending') as 'win' | 'lost' | 'pending',
+              matchTime: m.matchTime || m.time || '',
+              prediction: m.prediction || '',
+            })),
             total: parseFloat(tip.totalOdds || '0'),
-            wins: matches.filter((m: any) => m.status === 'win').length,
-            losses: matches.filter((m: any) => m.status === 'lost').length,
-            pending: matches.filter((m: any) => m.status === 'pending').length,
+            wins: (tip.matches || []).filter((m: any) => m.status === 'win').length,
+            losses: (tip.matches || []).filter((m: any) => m.status === 'lost').length,
+            pending: (tip.matches || []).filter((m: any) => m.status === 'pending').length,
             reactions: { like: tip.likesCount || 0, heart: 0, fire: 0, laugh: 0, wow: 0 },
+            likesCount: tip.likesCount || 0,
+            commentsCount: tip.commentsCount || 0,
           };
         });
         list.push({
@@ -1241,6 +1255,7 @@ export function PredictionsPage() {
           bio: data.bio || '',
           sports: data.sports || [],
           creationDate: data.createdAt?.toDate?.()?.toLocaleDateString('en', { month: 'short', year: 'numeric' }) || '',
+          ownerId: data.ownerId || '',
           avatar: data.avatar || undefined,
           coverImage: data.coverImage || undefined,
         });
@@ -1327,19 +1342,42 @@ export function PredictionsPage() {
       <AnimatePresence mode="wait">
         {tab === 'channels' && (
           <motion.div key="channels" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <div className="flex items-center gap-3 px-4 py-2 border-b border-[#1f1f1f]">
-              <span className="text-[10px] text-[#71767b]">{loading ? 'Loading...' : `${channels.length} channels`}</span>
-              <span className="text-[10px] text-green-400">{channels.filter(c => c.joined).length} joined</span>
-              <span className="text-[10px] text-[#71767b]">{channels.filter(c => c.type === 'free').length} free</span>
+            {/* My Channels / Explore tabs */}
+            <div className="flex items-center gap-1 px-4 py-2 border-b border-[#1f1f1f]">
+              <button onClick={() => setChannelTab('my')}
+                className={cn('px-3 py-1 rounded-full text-xs font-bold transition-all',
+                  channelTab === 'my' ? 'bg-[#ef4444] text-white' : 'text-[#71767b] hover:text-white')}>
+                {isTipster ? '📡 My Channel' : '✅ Joined'}
+              </button>
+              <button onClick={() => setChannelTab('explore')}
+                className={cn('px-3 py-1 rounded-full text-xs font-bold transition-all',
+                  channelTab === 'explore' ? 'bg-[#ef4444] text-white' : 'text-[#71767b] hover:text-white')}>
+                🔍 Explore
+              </button>
+              <span className="ml-auto text-[10px] text-[#71767b]">{loading ? 'Loading...' : `${channels.length} total`}</span>
             </div>
-            {filtered.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-20 text-center">
-                <p className="text-3xl mb-3">📡</p>
-                <p className="font-bold text-sm text-white">No channels found</p>
-              </div>
-            ) : filtered.map(ch => (
-              <ChannelRow key={ch.id} ch={ch} active={activeId === ch.id} onTap={() => handleSelectChannel(ch.id)} isTipster={isTipster} />
-            ))}
+            {(() => {
+              const myChannels = isTipster
+                ? filtered.filter(c => c.ownerId === userId)
+                : filtered.filter(c => c.joined);
+              const exploreChannels = isTipster
+                ? filtered.filter(c => c.ownerId !== userId)
+                : filtered.filter(c => !c.joined);
+              const displayList = channelTab === 'my' ? myChannels : exploreChannels;
+              return displayList.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-center px-8">
+                  <p className="text-3xl mb-3">📡</p>
+                  <p className="font-bold text-sm text-white">
+                    {channelTab === 'my' ? (isTipster ? 'You have no channels yet' : 'No joined channels') : 'No channels to explore'}
+                  </p>
+                  {channelTab === 'my' && !isTipster && (
+                    <p className="text-xs text-[#71767b] mt-1">Go to Explore to join channels</p>
+                  )}
+                </div>
+              ) : displayList.map(ch => (
+                <ChannelRow key={ch.id} ch={ch} active={activeId === ch.id} onTap={() => handleSelectChannel(ch.id)} isTipster={isTipster} />
+              ));
+            })()}
           </motion.div>
         )}
 

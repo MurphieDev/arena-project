@@ -20,57 +20,51 @@ export function BettingSlipModal({ isOpen, onClose, onSubmit }: BettingSlipModal
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const base64 = event.target?.result as string;
       setPreview(base64);
       setImageBase64(base64);
+      // Auto-scan immediately on upload
+      setLoading(true);
+      try {
+        const res = await fetch('/.netlify/functions/ocr-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageBase64: base64 }),
+        });
+        const data = await res.json();
+        const text = data?.ParsedResults?.[0]?.ParsedText || '';
+        const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
+        const matches: any[] = [];
+        lines.forEach((line: string) => {
+          const vsMatch = line.match(/(.+?)\s+(?:vs\.?|v\.?|-)\s+(.+)/i);
+          if (vsMatch) {
+            matches.push({
+              home: vsMatch[1].trim(),
+              away: vsMatch[2].trim(),
+              odds: '',
+              prediction: '',
+              status: 'pending',
+            });
+          }
+        });
+        const codeMatch = text.match(/(?:booking code|code|ref)[:\s]*([A-Z0-9]{5,})/i);
+        const oddsMatch = text.match(/(?:total odds|odds)[:\s]*([\d.]+)/i);
+        setOcrResult({
+          matches,
+          bookingCode: codeMatch?.[1] || '',
+          totalOdds: oddsMatch?.[1] || '',
+          rawText: text,
+        });
+      } catch (e) {
+        console.error('OCR error:', e);
+      } finally {
+        setLoading(false);
+      }
     };
     reader.readAsDataURL(file);
   };
 
-  const handleScan = async () => {
-    if (!imageBase64) return;
-    setLoading(true);
-    try {
-      const res = await fetch('/.netlify/functions/ocr-proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64 }),
-      });
-      const data = await res.json();
-      const text = data?.ParsedResults?.[0]?.ParsedText || '';
-      // Parse OCR text into matches
-      const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
-      const matches: any[] = [];
-      lines.forEach((line: string) => {
-        // Look for match patterns like "Team A vs Team B" or "Home - Away"
-        const vsMatch = line.match(/(.+?)\s+(?:vs\.?|v\.?|-)\s+(.+)/i);
-        if (vsMatch) {
-          matches.push({
-            home: vsMatch[1].trim(),
-            away: vsMatch[2].trim(),
-            odds: '',
-            prediction: '',
-            status: 'pending',
-          });
-        }
-      });
-      // Try to find booking code
-      const codeMatch = text.match(/(?:booking code|code|ref)[:\s]*([A-Z0-9]{5,})/i);
-      const oddsMatch = text.match(/(?:total odds|odds)[:\s]*([\d.]+)/i);
-      setOcrResult({
-        matches: matches.length > 0 ? matches : [],
-        bookingCode: codeMatch?.[1] || '',
-        totalOdds: oddsMatch?.[1] || '',
-        rawText: text,
-      });
-    } catch (e) {
-      console.error('OCR error:', e);
-      alert('OCR scanning failed. Please check your connection and try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleSubmit = () => {
     if (!imageBase64) { alert('Please upload a betting slip image'); return; }
@@ -124,13 +118,10 @@ export function BettingSlipModal({ isOpen, onClose, onSubmit }: BettingSlipModal
                     <div className="relative rounded-lg overflow-hidden bg-[#111]">
                       <img src={preview} alt="Preview" className="w-full max-h-64 object-contain" />
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex items-center gap-2">
                       <button onClick={() => { setPreview(''); setImageBase64(''); setOcrResult(null); }}
                         className="text-xs text-[#71767b] hover:text-white font-semibold">Change image</button>
-                      <button onClick={handleScan} disabled={loading}
-                        className="flex items-center gap-1 text-xs text-[#ef4444] font-bold hover:underline disabled:opacity-50">
-                        {loading ? <><Loader2 className="w-3 h-3 animate-spin" />Scanning...</> : '🔍 Scan with OCR'}
-                      </button>
+                      {loading && <span className="flex items-center gap-1 text-xs text-[#ef4444]"><Loader2 className="w-3 h-3 animate-spin" />Scanning...</span>}
                     </div>
                     {ocrResult && (
                       <div className="bg-[#111] border border-[#1f1f1f] rounded-xl p-3 space-y-2">
