@@ -5,9 +5,7 @@ import { useNavigate, useLocation, Routes, Route, Navigate } from 'react-router-
 import { Home, Zap, Target, Plus, User } from 'lucide-react';
 import { useAuth } from '../auth/hooks/AuthContext';
 import { useDetailView } from '../contexts/DetailViewContext';
-import { db, auth } from '../lib/firebase';
-import { collection, query as firestoreQuery, where, onSnapshot } from 'firebase/firestore';
-import { onAuthStateChanged } from 'firebase/auth';
+import { useUnreadCounts } from '../hooks/useUnreadCounts';
 import { cn } from '../lib/utils';
 import { RouteGuard } from '../middleware/guards/RouteGuards';
 import { Header } from '../layout/Header';
