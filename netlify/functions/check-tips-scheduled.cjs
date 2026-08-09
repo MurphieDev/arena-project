@@ -1,83 +1,52 @@
 // netlify/functions/check-tips-scheduled.cjs
-// Uses Firebase REST API - no firebase-admin needed
+// Uses Firebase Admin SDK for reliable Firestore access
 
 const https = require('https');
 
+// ── Environment vars ───────────────────────────────────────────
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
+const CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
+const PRIVATE_KEY = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
-const FIREBASE_TOKEN = process.env.FIREBASE_TOKEN;
 
-// ── Simple HTTPS request helper ────────────────────────────────────────────
-function httpsRequest(url, options = {}) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(url, options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { resolve({}); }
-      });
-    });
-    req.on('error', reject);
-    if (options.body) req.write(options.body);
-    req.end();
-  });
+// ── JWT for Firebase Admin ─────────────────────────────────────
+const crypto = require('crypto');
+
+function base64url(str) {
+  return Buffer.from(str).toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-// ── Firebase REST API helpers ──────────────────────────────────────────────
-const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-
-async function firestoreGet(path) {
-  const url = `${FIRESTORE_BASE}/${path}?key=${FIREBASE_TOKEN}`;
-  return httpsRequest(url);
-}
-
-async function firestoreQuery(collectionPath, field, value) {
-  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents:runQuery?key=${FIREBASE_TOKEN}`;
-  const body = JSON.stringify({
-    structuredQuery: {
-      from: [{ collectionId: collectionPath.split('/').pop() }],
-      where: {
-        fieldFilter: {
-          field: { fieldPath: field },
-          op: 'EQUAL',
-          value: { stringValue: value }
-        }
-      }
-    }
-  });
-
-  const options = {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(body)
-    },
-    body
-  };
-
-  const url2 = new URL(url);
-  return httpsRequest({ hostname: url2.hostname, path: url2.pathname + url2.search, method: 'POST', headers: options.headers }, options);
-}
-
-async function firestorePatch(path, fields) {
-  const url = `${FIRESTORE_BASE}/${path}?key=${FIREBASE_TOKEN}`;
-  const body = JSON.stringify({ fields });
-  const urlParsed = new URL(url);
+async function getAccessToken() {
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const payload = base64url(JSON.stringify({
+    iss: CLIENT_EMAIL,
+    scope: 'https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/firebase',
+    aud: 'https://oauth2.googleapis.com/token',
+    exp: now + 3600,
+    iat: now,
+  }));
+  const sign = crypto.createSign('RSA-SHA256');
+  sign.update(`${header}.${payload}`);
+  const sig = sign.sign(PRIVATE_KEY, 'base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  const jwt = `${header}.${payload}.${sig}`;
 
   return new Promise((resolve, reject) => {
+    const body = `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`;
     const req = https.request({
-      hostname: urlParsed.hostname,
-      path: urlParsed.pathname + urlParsed.search,
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body)
-      }
-    }, (res) => {
+      hostname: 'oauth2.googleapis.com',
+      path: '/token',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
+    }, res => {
       let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve(JSON.parse(data)));
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data).access_token); }
+        catch (e) { reject(new Error('Failed to get access token: ' + data)); }
+      });
     });
     req.on('error', reject);
     req.write(body);
@@ -85,22 +54,67 @@ async function firestorePatch(path, fields) {
   });
 }
 
-// ── API Football helper ────────────────────────────────────────────────────
+// ── Firestore REST helpers ─────────────────────────────────────
+const BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
+
+function httpsReq(options, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch { resolve({}); }
+      });
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+async function fsGet(path, token) {
+  const u = new URL(`${BASE}/${path}`);
+  return httpsReq({ hostname: u.hostname, path: u.pathname + u.search, headers: { Authorization: `Bearer ${token}` } });
+}
+
+async function fsList(path, token) {
+  const u = new URL(`${BASE}/${path}`);
+  return httpsReq({ hostname: u.hostname, path: u.pathname + '?pageSize=300', headers: { Authorization: `Bearer ${token}` } });
+}
+
+async function fsPatch(path, fields, token) {
+  const body = JSON.stringify({ fields });
+  const fieldMask = Object.keys(fields).map(k => `updateMask.fieldPaths=${k}`).join('&');
+  const u = new URL(`${BASE}/${path}?${fieldMask}`);
+  return httpsReq({
+    hostname: u.hostname, path: u.pathname + u.search, method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  }, body);
+}
+
+async function fsCreate(path, fields, token) {
+  const body = JSON.stringify({ fields });
+  const u = new URL(`${BASE}/${path}`);
+  return httpsReq({
+    hostname: u.hostname, path: u.pathname, method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  }, body);
+}
+
+// ── API Football ───────────────────────────────────────────────
 function apiFootball(endpoint) {
-  return new Promise((resolve) => {
-    const options = {
+  return new Promise(resolve => {
+    const req = https.request({
       hostname: 'v3.football.api-sports.io',
       path: endpoint,
       headers: { 'x-apisports-key': API_FOOTBALL_KEY }
-    };
-    const req = https.request(options, (res) => {
+    }, res => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.on('data', c => data += c);
       res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          resolve(Array.isArray(parsed.response) ? parsed.response : []);
-        } catch { resolve([]); }
+        try { resolve(JSON.parse(data).response || []); }
+        catch { resolve([]); }
       });
     });
     req.on('error', () => resolve([]));
@@ -108,11 +122,11 @@ function apiFootball(endpoint) {
   });
 }
 
-// ── Team matching ──────────────────────────────────────────────────────────
+// ── Team name matching ─────────────────────────────────────────
 function normalize(name) {
   if (!name) return '';
   return name.toLowerCase()
-    .replace(/\bfc\b|\bac\b|\bsc\b/g, '')
+    .replace(/\bfc\b|\bac\b|\bsc\b|\bcf\b|\baf\b/g, '')
     .replace(/manchester/g, 'man')
     .replace(/united/g, 'utd')
     .replace(/[^a-z0-9 ]/g, '')
@@ -128,80 +142,50 @@ function teamsMatch(a, b) {
   return wb.some(w => wa.includes(w));
 }
 
-// ── Find team ID by name (API-Football requires numeric ID, not name!) ────
-const teamIdCache = {};
-async function findTeamId(teamName) {
-  if (!teamName) return null;
-  const cacheKey = teamName.toLowerCase();
-  if (teamIdCache[cacheKey] !== undefined) return teamIdCache[cacheKey];
-
-  const results = await apiFootball(`/teams?search=${encodeURIComponent(teamName)}`);
-  if (results.length > 0) {
-    // Find best match among results
-    const best = results.find(r => teamsMatch(r?.team?.name, teamName)) || results[0];
-    const id = best?.team?.id || null;
-    teamIdCache[cacheKey] = id;
-    return id;
-  }
-  teamIdCache[cacheKey] = null;
-  return null;
+const teamCache = {};
+async function findTeamId(name) {
+  if (!name) return null;
+  const key = normalize(name);
+  if (teamCache[key] !== undefined) return teamCache[key];
+  const results = await apiFootball(`/teams?search=${encodeURIComponent(name)}`);
+  const best = results.find(r => teamsMatch(r?.team?.name, name)) || results[0];
+  teamCache[key] = best?.team?.id || null;
+  return teamCache[key];
 }
 
-// ── Check match result ─────────────────────────────────────────────────────
 async function checkMatch(home, away) {
   if (!home || !away) return { status: 'not_found' };
+
+  // Look back 30 days for old tips
   const today = new Date().toISOString().split('T')[0];
-  const twoWeeksAgo = new Date(Date.now() - 14 * 86400000).toISOString().split('T')[0];
+  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
 
-  // Step 1: Resolve team name to numeric ID (API-Football requires this)
-  const homeTeamId = await findTeamId(home);
+  const teamId = await findTeamId(home) || await findTeamId(away);
+  if (!teamId) return { status: 'not_found' };
 
-  if (homeTeamId) {
-    for (const season of [2026, 2025]) {
-      const fixtures = await apiFootball(
-        `/fixtures?team=${homeTeamId}&season=${season}&from=${twoWeeksAgo}&to=${today}`
-      );
-      for (const f of fixtures) {
-        if (teamsMatch(f?.teams?.home?.name, home) && teamsMatch(f?.teams?.away?.name, away)) {
-          const s = f?.fixture?.status?.short;
-          if (['FT', 'AET', 'PEN'].includes(s)) {
-            return { status: 'finished', homeScore: f.goals.home ?? 0, awayScore: f.goals.away ?? 0 };
-          }
-          if (['CANC', 'PST', 'ABD'].includes(s)) return { status: 'void' };
-          if (['1H', 'HT', '2H', 'ET'].includes(s)) return { status: 'live' };
-          return { status: 'pending' };
+  for (const season of [2026, 2025, 2024]) {
+    const fixtures = await apiFootball(
+      `/fixtures?team=${teamId}&season=${season}&from=${monthAgo}&to=${today}`
+    );
+    for (const f of fixtures) {
+      if (teamsMatch(f?.teams?.home?.name, home) && teamsMatch(f?.teams?.away?.name, away)) {
+        const s = f?.fixture?.status?.short;
+        if (['FT', 'AET', 'PEN'].includes(s)) {
+          return { status: 'finished', homeScore: f.goals.home ?? 0, awayScore: f.goals.away ?? 0 };
         }
+        if (['CANC', 'PST', 'ABD'].includes(s)) return { status: 'void' };
+        if (['1H', 'HT', '2H', 'ET', 'P', 'BT'].includes(s)) return { status: 'live' };
+        return { status: 'scheduled' };
       }
     }
   }
-
-  // Fallback: try searching by away team ID too (in case home name didn't resolve well)
-  const awayTeamId = await findTeamId(away);
-  if (awayTeamId) {
-    for (const season of [2026, 2025]) {
-      const fixtures = await apiFootball(
-        `/fixtures?team=${awayTeamId}&season=${season}&from=${twoWeeksAgo}&to=${today}`
-      );
-      for (const f of fixtures) {
-        if (teamsMatch(f?.teams?.home?.name, home) && teamsMatch(f?.teams?.away?.name, away)) {
-          const s = f?.fixture?.status?.short;
-          if (['FT', 'AET', 'PEN'].includes(s)) {
-            return { status: 'finished', homeScore: f.goals.home ?? 0, awayScore: f.goals.away ?? 0 };
-          }
-          if (['CANC', 'PST', 'ABD'].includes(s)) return { status: 'void' };
-          if (['1H', 'HT', '2H', 'ET'].includes(s)) return { status: 'live' };
-          return { status: 'pending' };
-        }
-      }
-    }
-  }
-
   return { status: 'not_found' };
 }
 
-// ── Evaluate prediction ────────────────────────────────────────────────────
+// ── Evaluate prediction ────────────────────────────────────────
 function evaluate(pred, h, a) {
   const p = (pred || '').toLowerCase().trim();
+  if (!p) return null;
   const t = h + a;
   if (p === '1' || p === 'home' || p === 'home win') return h > a;
   if (p === 'x' || p === 'draw') return h === a;
@@ -222,15 +206,17 @@ function evaluate(pred, h, a) {
   return null;
 }
 
-// ── Main handler ───────────────────────────────────────────────────────────
+// ── Main handler ───────────────────────────────────────────────
 exports.handler = async function () {
-  console.log('🔄 Starting tip verification:', new Date().toISOString());
+  console.log('🔄 Tip verification started:', new Date().toISOString());
 
-  if (!PROJECT_ID || !API_FOOTBALL_KEY || !FIREBASE_TOKEN) {
-    const missing = [];
-    if (!PROJECT_ID) missing.push('FIREBASE_PROJECT_ID');
-    if (!API_FOOTBALL_KEY) missing.push('API_FOOTBALL_KEY');
-    if (!FIREBASE_TOKEN) missing.push('FIREBASE_TOKEN');
+  if (!PROJECT_ID || !CLIENT_EMAIL || !PRIVATE_KEY || !API_FOOTBALL_KEY) {
+    const missing = [
+      !PROJECT_ID && 'FIREBASE_PROJECT_ID',
+      !CLIENT_EMAIL && 'FIREBASE_CLIENT_EMAIL',
+      !PRIVATE_KEY && 'FIREBASE_PRIVATE_KEY',
+      !API_FOOTBALL_KEY && 'API_FOOTBALL_KEY',
+    ].filter(Boolean);
     console.error('❌ Missing env vars:', missing.join(', '));
     return { statusCode: 500, body: JSON.stringify({ error: 'Missing: ' + missing.join(', ') }) };
   }
@@ -238,152 +224,135 @@ exports.handler = async function () {
   let checked = 0, settled = 0;
 
   try {
-    // Get all channels
-    const channelsRes = await httpsRequest(`${FIRESTORE_BASE}/channels?key=${FIREBASE_TOKEN}`);
+    // Get Firebase access token
+    const token = await getAccessToken();
+    console.log('✅ Got Firebase access token');
+
+    // List all channels
+    const channelsRes = await fsList('channels', token);
     const channels = channelsRes.documents || [];
-    console.log(`Found ${channels.length} channels`);
+    console.log(`📡 Found ${channels.length} channels`);
 
     for (const channel of channels) {
       const channelId = channel.name.split('/').pop();
-      const channelName = channel.fields?.name?.stringValue || '';
+      const channelName = channel.fields?.name?.stringValue || channelId;
       const tipsterId = channel.fields?.ownerId?.stringValue || '';
 
-      // Get pending tips
-      const tipsRes = await httpsRequest(
-        `${FIRESTORE_BASE}/channels/${channelId}/tips?key=${FIREBASE_TOKEN}`
-      );
-      const tips = (tipsRes.documents || []).filter(t =>
+      // List all tips in this channel
+      const tipsRes = await fsList(`channels/${channelId}/tips`, token);
+      const pendingTips = (tipsRes.documents || []).filter(t =>
         t.fields?.status?.stringValue === 'pending'
       );
 
-      if (!tips.length) continue;
-      console.log(`Channel ${channelName}: ${tips.length} pending tips`);
+      if (!pendingTips.length) continue;
+      console.log(`Channel "${channelName}": ${pendingTips.length} pending tips`);
 
-      for (const tip of tips) {
+      for (const tip of pendingTips) {
         const tipId = tip.name.split('/').pop();
-        const tipFields = tip.fields || {};
-
-        // Get matches array from Firestore
-        const matchesArray = tipFields.matches?.arrayValue?.values || [];
-        if (!matchesArray.length) continue;
+        const fields = tip.fields || {};
+        const matchesArr = fields.matches?.arrayValue?.values || [];
+        if (!matchesArr.length) {
+          console.log(`Tip ${tipId}: no matches, skipping`);
+          continue;
+        }
 
         checked++;
         let allSettled = true;
         let anyLost = false;
         const updatedMatches = [];
 
-        for (const matchVal of matchesArray) {
-          const match = matchVal.mapValue?.fields || {};
-          const currentStatus = match.status?.stringValue || 'pending';
+        for (const mv of matchesArr) {
+          const mf = mv.mapValue?.fields || {};
+          const currentStatus = mf.status?.stringValue || 'pending';
 
-          // Already settled
           if (['win', 'lost', 'void'].includes(currentStatus)) {
             if (currentStatus === 'lost') anyLost = true;
-            updatedMatches.push(matchVal);
+            updatedMatches.push(mv);
             continue;
           }
 
-          const home = match.home?.stringValue || '';
-          const away = match.away?.stringValue || '';
-          const prediction = match.prediction?.stringValue || tipFields.prediction?.stringValue || '';
+          const home = mf.home?.stringValue || '';
+          const away = mf.away?.stringValue || '';
+          const pred = mf.prediction?.stringValue || fields.prediction?.stringValue || '';
 
-          console.log(`Checking: ${home} vs ${away} | Prediction: ${prediction}`);
-
+          console.log(`  Checking: "${home}" vs "${away}" | pred: "${pred}"`);
           const result = await checkMatch(home, away);
-          console.log(`Result: ${result.status}`);
+          console.log(`  Result: ${result.status}`);
 
-          if (result.status === 'pending' || result.status === 'not_found' || result.status === 'live') {
+          if (['pending', 'not_found', 'live', 'scheduled'].includes(result.status)) {
             allSettled = false;
-            updatedMatches.push(matchVal);
+            updatedMatches.push(mv);
             continue;
           }
 
           if (result.status === 'void') {
-            updatedMatches.push({
-              mapValue: { fields: { ...match, status: { stringValue: 'void' } } }
-            });
+            updatedMatches.push({ mapValue: { fields: { ...mf, status: { stringValue: 'void' } } } });
             continue;
           }
 
           if (result.status === 'finished') {
-            const won = evaluate(prediction, result.homeScore, result.awayScore);
-            if (won === null) { allSettled = false; updatedMatches.push(matchVal); continue; }
-
+            const won = evaluate(pred, result.homeScore, result.awayScore);
+            if (won === null) {
+              // Can't evaluate - mark won if goals scored (default)
+              console.log(`  Can't evaluate "${pred}" - defaulting to pending`);
+              allSettled = false;
+              updatedMatches.push(mv);
+              continue;
+            }
             const newStatus = won ? 'win' : 'lost';
             if (!won) anyLost = true;
-
             updatedMatches.push({
               mapValue: {
                 fields: {
-                  ...match,
+                  ...mf,
                   status: { stringValue: newStatus },
-                  homeScore: { integerValue: result.homeScore },
-                  awayScore: { integerValue: result.awayScore },
+                  homeScore: { integerValue: String(result.homeScore) },
+                  awayScore: { integerValue: String(result.awayScore) },
                 }
               }
             });
-            console.log(`✅ ${home} vs ${away}: ${result.homeScore}-${result.awayScore} → ${newStatus}`);
+            console.log(`  ✅ ${home} vs ${away}: ${result.homeScore}-${result.awayScore} → ${newStatus}`);
           }
         }
 
-        // Accumulator: if any lost, whole tip lost
         if (anyLost) allSettled = true;
-
         const tipStatus = allSettled ? (anyLost ? 'lost' : 'won') : 'pending';
 
-        // Update tip in Firestore
-        const updateFields = {
+        // Update tip
+        await fsPatch(`channels/${channelId}/tips/${tipId}`, {
           matches: { arrayValue: { values: updatedMatches } },
           status: { stringValue: tipStatus },
-        };
+        }, token);
 
-        const tipPath = `channels/${channelId}/tips/${tipId}`;
-        const updateUrl = `${FIRESTORE_BASE}/${tipPath}?updateMask.fieldPaths=matches&updateMask.fieldPaths=status&key=${FIREBASE_TOKEN}`;
-
-        await new Promise((resolve, reject) => {
-          const body = JSON.stringify({ fields: updateFields });
-          const u = new URL(updateUrl);
-          const req = https.request({
-            hostname: u.hostname,
-            path: u.pathname + u.search,
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-          }, res => {
-            res.on('data', () => {});
-            res.on('end', resolve);
-          });
-          req.on('error', reject);
-          req.write(body);
-          req.end();
-        });
-
-        if (allSettled) {
+        if (allSettled && tipStatus !== 'pending') {
           settled++;
-          console.log(`📝 Tip ${tipId} settled as ${tipStatus}`);
+          console.log(`📝 Tip ${tipId} → ${tipStatus}`);
 
-          // Send notification to tipster
+          // Update tipster win rate
           if (tipsterId) {
-            const notifBody = JSON.stringify({
-              fields: {
-                userId: { stringValue: tipsterId },
-                type: { stringValue: 'tip_result' },
-                title: { stringValue: tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost' },
-                message: { stringValue: `Your tip in ${channelName} settled as ${tipStatus.toUpperCase()}` },
-                read: { booleanValue: false },
-              }
-            });
-            const notifUrl = new URL(`${FIRESTORE_BASE}/notifications?key=${FIREBASE_TOKEN}`);
-            await new Promise((resolve) => {
-              const req = https.request({
-                hostname: notifUrl.hostname,
-                path: notifUrl.pathname + notifUrl.search,
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(notifBody) }
-              }, res => { res.on('data', () => {}); res.on('end', resolve); });
-              req.on('error', () => resolve());
-              req.write(notifBody);
-              req.end();
-            });
+            const userRes = await fsGet(`users/${tipsterId}`, token);
+            const uf = userRes.fields || {};
+            const totalTips = parseInt(uf.tipsCount?.integerValue || '0') || 0;
+            const wonTips = parseInt(uf.wonTips?.integerValue || '0') || 0;
+            const newWon = tipStatus === 'won' ? wonTips + 1 : wonTips;
+            const newTotal = totalTips > 0 ? totalTips : 1;
+            const winRate = Math.round((newWon / newTotal) * 100);
+
+            await fsPatch(`users/${tipsterId}`, {
+              winRate: { integerValue: String(winRate) },
+              wonTips: { integerValue: String(newWon) },
+              ...(tipStatus === 'won' ? {} : {}),
+            }, token);
+
+            // Notify tipster
+            await fsCreate('notifications', {
+              userId: { stringValue: tipsterId },
+              type: { stringValue: 'tip_result' },
+              title: { stringValue: tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost' },
+              message: { stringValue: `Your tip in ${channelName} has been verified as ${tipStatus.toUpperCase()}` },
+              read: { booleanValue: false },
+              createdAt: { timestampValue: new Date().toISOString() },
+            }, token);
           }
         }
       }
@@ -393,7 +362,7 @@ exports.handler = async function () {
     return { statusCode: 200, body: JSON.stringify({ success: true, checked, settled }) };
 
   } catch (e) {
-    console.error('❌ Fatal error:', e.message);
+    console.error('❌ Fatal error:', e.message, e.stack);
     return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
   }
 };
