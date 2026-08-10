@@ -55,10 +55,20 @@ async function getAccessToken() {
 }
 
 // ── Firestore REST helpers ─────────────────────────────────────
-const BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
 
-function httpsReq(options, body) {
+
+function httpsReq(method, path, token, body) {
   return new Promise((resolve, reject) => {
+    const bodyStr = body ? JSON.stringify(body) : null;
+    const options = {
+      hostname: 'firestore.googleapis.com',
+      path,
+      method: method || 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(bodyStr ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) } : {})
+      }
+    };
     const req = https.request(options, res => {
       let data = '';
       res.on('data', c => data += c);
@@ -68,38 +78,28 @@ function httpsReq(options, body) {
       });
     });
     req.on('error', reject);
-    if (body) req.write(body);
+    if (bodyStr) req.write(bodyStr);
     req.end();
   });
 }
 
+const FS_BASE = `/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
+
 async function fsGet(path, token) {
-  const u = new URL(`${BASE}/${path}`);
-  return httpsReq({ hostname: u.hostname, path: u.pathname + u.search, headers: { Authorization: `Bearer ${token}` } });
+  return httpsReq('GET', `${FS_BASE}/${path}`, token);
 }
 
 async function fsList(path, token) {
-  const u = new URL(`${BASE}/${path}`);
-  return httpsReq({ hostname: u.hostname, path: u.pathname + '?pageSize=300', headers: { Authorization: `Bearer ${token}` } });
+  return httpsReq('GET', `${FS_BASE}/${path}?pageSize=300`, token);
 }
 
 async function fsPatch(path, fields, token) {
-  const body = JSON.stringify({ fields });
   const fieldMask = Object.keys(fields).map(k => `updateMask.fieldPaths=${k}`).join('&');
-  const u = new URL(`${BASE}/${path}?${fieldMask}`);
-  return httpsReq({
-    hostname: u.hostname, path: u.pathname + u.search, method: 'PATCH',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-  }, body);
+  return httpsReq('PATCH', `${FS_BASE}/${path}?${fieldMask}`, token, { fields });
 }
 
 async function fsCreate(path, fields, token) {
-  const body = JSON.stringify({ fields });
-  const u = new URL(`${BASE}/${path}`);
-  return httpsReq({
-    hostname: u.hostname, path: u.pathname, method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-  }, body);
+  return httpsReq('POST', `${FS_BASE}/${path}`, token, { fields });
 }
 
 // ── API Football ───────────────────────────────────────────────
@@ -228,10 +228,15 @@ exports.handler = async function () {
     const token = await getAccessToken();
     console.log('✅ Got Firebase access token');
 
-    // List all channels
+    // List all channels using runQuery
     const channelsRes = await fsList('channels', token);
-    const channels = channelsRes.documents || [];
+    const channels = (channelsRes.documents || []);
     console.log(`📡 Found ${channels.length} channels`);
+
+    if (channels.length === 0) {
+      console.log('No channels found - check Firestore collection name');
+      return { statusCode: 200, body: JSON.stringify({ success: true, checked: 0, settled: 0, note: 'No channels found' }) };
+    }
 
     for (const channel of channels) {
       const channelId = channel.name.split('/').pop();
