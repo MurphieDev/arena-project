@@ -228,14 +228,26 @@ exports.handler = async function () {
     const token = await getAccessToken();
     console.log('✅ Got Firebase access token');
 
-    // List all channels using runQuery
-    const channelsRes = await fsList('channels', token);
-    const channels = (channelsRes.documents || []);
+    // List all channels
+    const channelsPath = `${FS_BASE}/channels?pageSize=300`;
+    console.log('Fetching channels from:', channelsPath);
+
+    const channelsRes = await httpsReq('GET', `/v1/projects/${PROJECT_ID}/databases/(default)/documents/channels?pageSize=300`, token);
+    console.log('Channels response keys:', Object.keys(channelsRes));
+    console.log('Full response sample:', JSON.stringify(channelsRes).slice(0, 500));
+
+    const channels = channelsRes.documents || [];
     console.log(`📡 Found ${channels.length} channels`);
 
     if (channels.length === 0) {
-      console.log('No channels found - check Firestore collection name');
-      return { statusCode: 200, body: JSON.stringify({ success: true, checked: 0, settled: 0, note: 'No channels found' }) };
+      // Log what we got back to debug
+      console.log('Response was:', JSON.stringify(channelsRes).slice(0, 300));
+      return { statusCode: 200, body: JSON.stringify({ 
+        success: false, checked: 0, settled: 0, 
+        note: 'No channels found',
+        debug: JSON.stringify(channelsRes).slice(0, 300),
+        projectId: PROJECT_ID
+      })};
     }
 
     for (const channel of channels) {
