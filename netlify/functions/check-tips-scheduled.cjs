@@ -1,123 +1,19 @@
 // netlify/functions/check-tips-scheduled.cjs
-// Uses Firebase Admin SDK for reliable Firestore access
-
+const admin = require('firebase-admin');
 const https = require('https');
 
-// ── Environment vars ───────────────────────────────────────────
-const PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
-const CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
-const PRIVATE_KEY = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
-const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
-
-// ── JWT for Firebase Admin ─────────────────────────────────────
-const crypto = require('crypto');
-
-async function getAccessToken() {
-  const now = Math.floor(Date.now() / 1000);
-  
-  // Build JWT header and payload
-  const headerObj = { alg: 'RS256', typ: 'JWT' };
-  const payloadObj = {
-    iss: CLIENT_EMAIL,
-    sub: CLIENT_EMAIL,
-    scope: 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/datastore',
-    aud: 'https://oauth2.googleapis.com/token',
-    exp: now + 3600,
-    iat: now,
-  };
-
-  const header = Buffer.from(JSON.stringify(headerObj)).toString('base64url');
-  const payload = Buffer.from(JSON.stringify(payloadObj)).toString('base64url');
-  const signingInput = `${header}.${payload}`;
-  
-  const sign = crypto.createSign('RSA-SHA256');
-  sign.update(signingInput);
-  sign.end();
-  const signature = sign.sign(PRIVATE_KEY).toString('base64url');
-  
-  const jwt = `${signingInput}.${signature}`;
-  
-  console.log('JWT client_email:', CLIENT_EMAIL);
-  console.log('Private key starts with:', PRIVATE_KEY.slice(0, 30));
-
-  return new Promise((resolve, reject) => {
-    const body = `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`;
-    const req = https.request({
-      hostname: 'oauth2.googleapis.com',
-      path: '/token',
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(body)
-      }
-    }, res => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          console.log('Token response:', JSON.stringify(parsed).slice(0, 200));
-          if (parsed.access_token) {
-            resolve(parsed.access_token);
-          } else {
-            reject(new Error('No access token: ' + data));
-          }
-        } catch (e) { reject(new Error('Token parse error: ' + data)); }
-      });
-    });
-    req.on('error', reject);
-    req.write(body);
-    req.end();
+// Initialize Firebase Admin
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+    }),
   });
 }
 
-// ── Firestore REST helpers ─────────────────────────────────────
-
-
-function httpsReq(method, path, token, body) {
-  return new Promise((resolve, reject) => {
-    const bodyStr = body ? JSON.stringify(body) : null;
-    const options = {
-      hostname: 'firestore.googleapis.com',
-      path,
-      method: method || 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(bodyStr ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) } : {})
-      }
-    };
-    const req = https.request(options, res => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch { resolve({}); }
-      });
-    });
-    req.on('error', reject);
-    if (bodyStr) req.write(bodyStr);
-    req.end();
-  });
-}
-
-const FS_BASE = `/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-
-async function fsGet(path, token) {
-  return httpsReq('GET', `${FS_BASE}/${path}`, token);
-}
-
-async function fsList(path, token) {
-  return httpsReq('GET', `${FS_BASE}/${path}?pageSize=300`, token);
-}
-
-async function fsPatch(path, fields, token) {
-  const fieldMask = Object.keys(fields).map(k => `updateMask.fieldPaths=${k}`).join('&');
-  return httpsReq('PATCH', `${FS_BASE}/${path}?${fieldMask}`, token, { fields });
-}
-
-async function fsCreate(path, fields, token) {
-  return httpsReq('POST', `${FS_BASE}/${path}`, token, { fields });
-}
+const db = admin.firestore();
 
 // ── API Football ───────────────────────────────────────────────
 function apiFootball(endpoint) {
@@ -125,7 +21,7 @@ function apiFootball(endpoint) {
     const req = https.request({
       hostname: 'v3.football.api-sports.io',
       path: endpoint,
-      headers: { 'x-apisports-key': API_FOOTBALL_KEY }
+      headers: { 'x-apisports-key': process.env.API_FOOTBALL_KEY }
     }, res => {
       let data = '';
       res.on('data', c => data += c);
@@ -143,7 +39,7 @@ function apiFootball(endpoint) {
 function normalize(name) {
   if (!name) return '';
   return name.toLowerCase()
-    .replace(/\bfc\b|\bac\b|\bsc\b|\bcf\b|\baf\b/g, '')
+    .replace(/\bfc\b|\bac\b|\bsc\b|\bcf\b/g, '')
     .replace(/manchester/g, 'man')
     .replace(/united/g, 'utd')
     .replace(/[^a-z0-9 ]/g, '')
@@ -172,18 +68,12 @@ async function findTeamId(name) {
 
 async function checkMatch(home, away) {
   if (!home || !away) return { status: 'not_found' };
-
-  // Look back 30 days for old tips
   const today = new Date().toISOString().split('T')[0];
   const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
-
   const teamId = await findTeamId(home) || await findTeamId(away);
   if (!teamId) return { status: 'not_found' };
-
   for (const season of [2026, 2025, 2024]) {
-    const fixtures = await apiFootball(
-      `/fixtures?team=${teamId}&season=${season}&from=${monthAgo}&to=${today}`
-    );
+    const fixtures = await apiFootball(`/fixtures?team=${teamId}&season=${season}&from=${monthAgo}&to=${today}`);
     for (const f of fixtures) {
       if (teamsMatch(f?.teams?.home?.name, home) && teamsMatch(f?.teams?.away?.name, away)) {
         const s = f?.fixture?.status?.short;
@@ -191,7 +81,7 @@ async function checkMatch(home, away) {
           return { status: 'finished', homeScore: f.goals.home ?? 0, awayScore: f.goals.away ?? 0 };
         }
         if (['CANC', 'PST', 'ABD'].includes(s)) return { status: 'void' };
-        if (['1H', 'HT', '2H', 'ET', 'P', 'BT'].includes(s)) return { status: 'live' };
+        if (['1H', 'HT', '2H', 'ET', 'P'].includes(s)) return { status: 'live' };
         return { status: 'scheduled' };
       }
     }
@@ -199,11 +89,9 @@ async function checkMatch(home, away) {
   return { status: 'not_found' };
 }
 
-// ── Evaluate prediction ────────────────────────────────────────
 function evaluate(pred, h, a) {
   const p = (pred || '').toLowerCase().trim();
   if (!p) return null;
-  const t = h + a;
   if (p === '1' || p === 'home' || p === 'home win') return h > a;
   if (p === 'x' || p === 'draw') return h === a;
   if (p === '2' || p === 'away' || p === 'away win') return a > h;
@@ -211,13 +99,10 @@ function evaluate(pred, h, a) {
   if (p === 'x2') return a >= h;
   if (p === '12') return h !== a;
   if (p === 'gg' || p === 'btts') return h > 0 && a > 0;
-  if (p === 'ng' || p === 'no btts') return h === 0 || a === 0;
-  if (p === 'home to score') return h > 0;
-  if (p === 'away to score') return a > 0;
   const over = p.match(/^over\s*([\d.]+)/);
-  if (over) return t > parseFloat(over[1]);
+  if (over) return (h + a) > parseFloat(over[1]);
   const under = p.match(/^under\s*([\d.]+)/);
-  if (under) return t < parseFloat(under[1]);
+  if (under) return (h + a) < parseFloat(under[1]);
   const score = p.match(/^(\d+)[-:](\d+)$/);
   if (score) return h === parseInt(score[1]) && a === parseInt(score[2]);
   return null;
@@ -227,87 +112,49 @@ function evaluate(pred, h, a) {
 exports.handler = async function () {
   console.log('🔄 Tip verification started:', new Date().toISOString());
 
-  if (!PROJECT_ID || !CLIENT_EMAIL || !PRIVATE_KEY || !API_FOOTBALL_KEY) {
-    const missing = [
-      !PROJECT_ID && 'FIREBASE_PROJECT_ID',
-      !CLIENT_EMAIL && 'FIREBASE_CLIENT_EMAIL',
-      !PRIVATE_KEY && 'FIREBASE_PRIVATE_KEY',
-      !API_FOOTBALL_KEY && 'API_FOOTBALL_KEY',
-    ].filter(Boolean);
-    console.error('❌ Missing env vars:', missing.join(', '));
-    return { statusCode: 500, body: JSON.stringify({ error: 'Missing: ' + missing.join(', ') }) };
-  }
-
   let checked = 0, settled = 0;
 
   try {
-    // Get Firebase access token
-    const token = await getAccessToken();
-    console.log('✅ Got Firebase access token');
+    // Get all channels
+    const channelsSnap = await db.collection('channels').get();
+    console.log(`📡 Found ${channelsSnap.size} channels`);
 
-    // List all channels
-    const channelsPath = `${FS_BASE}/channels?pageSize=300`;
-    console.log('Fetching channels from:', channelsPath);
+    for (const channelDoc of channelsSnap.docs) {
+      const channelData = channelDoc.data();
+      const channelName = channelData.name || channelDoc.id;
+      const tipsterId = channelData.ownerId || '';
 
-    const channelsRes = await httpsReq('GET', `/v1/projects/${PROJECT_ID}/databases/(default)/documents/channels?pageSize=300`, token);
-    console.log('Channels response keys:', Object.keys(channelsRes));
-    console.log('Full response sample:', JSON.stringify(channelsRes).slice(0, 500));
+      // Get pending tips
+      const tipsSnap = await db.collection('channels')
+        .doc(channelDoc.id)
+        .collection('tips')
+        .where('status', '==', 'pending')
+        .get();
 
-    const channels = channelsRes.documents || [];
-    console.log(`📡 Found ${channels.length} channels`);
+      if (tipsSnap.empty) continue;
+      console.log(`Channel "${channelName}": ${tipsSnap.size} pending tips`);
 
-    if (channels.length === 0) {
-      // Log what we got back to debug
-      console.log('Response was:', JSON.stringify(channelsRes).slice(0, 300));
-      return { statusCode: 200, body: JSON.stringify({ 
-        success: false, checked: 0, settled: 0, 
-        note: 'No channels found',
-        debug: JSON.stringify(channelsRes).slice(0, 300),
-        projectId: PROJECT_ID
-      })};
-    }
-
-    for (const channel of channels) {
-      const channelId = channel.name.split('/').pop();
-      const channelName = channel.fields?.name?.stringValue || channelId;
-      const tipsterId = channel.fields?.ownerId?.stringValue || '';
-
-      // List all tips in this channel
-      const tipsRes = await fsList(`channels/${channelId}/tips`, token);
-      const pendingTips = (tipsRes.documents || []).filter(t =>
-        t.fields?.status?.stringValue === 'pending'
-      );
-
-      if (!pendingTips.length) continue;
-      console.log(`Channel "${channelName}": ${pendingTips.length} pending tips`);
-
-      for (const tip of pendingTips) {
-        const tipId = tip.name.split('/').pop();
-        const fields = tip.fields || {};
-        const matchesArr = fields.matches?.arrayValue?.values || [];
-        if (!matchesArr.length) {
-          console.log(`Tip ${tipId}: no matches, skipping`);
-          continue;
-        }
+      for (const tipDoc of tipsSnap.docs) {
+        const tipData = tipDoc.data();
+        const matches = tipData.matches || [];
+        if (!matches.length) continue;
 
         checked++;
         let allSettled = true;
         let anyLost = false;
         const updatedMatches = [];
 
-        for (const mv of matchesArr) {
-          const mf = mv.mapValue?.fields || {};
-          const currentStatus = mf.status?.stringValue || 'pending';
-
+        for (const match of matches) {
+          const currentStatus = match.status || 'pending';
           if (['win', 'lost', 'void'].includes(currentStatus)) {
             if (currentStatus === 'lost') anyLost = true;
-            updatedMatches.push(mv);
+            updatedMatches.push(match);
             continue;
           }
 
-          const home = mf.home?.stringValue || '';
-          const away = mf.away?.stringValue || '';
-          const pred = mf.prediction?.stringValue || fields.prediction?.stringValue || '';
+          const home = match.home || '';
+          const away = match.away || '';
+          const pred = match.prediction || tipData.prediction || '';
 
           console.log(`  Checking: "${home}" vs "${away}" | pred: "${pred}"`);
           const result = await checkMatch(home, away);
@@ -315,88 +162,86 @@ exports.handler = async function () {
 
           if (['pending', 'not_found', 'live', 'scheduled'].includes(result.status)) {
             allSettled = false;
-            updatedMatches.push(mv);
+            updatedMatches.push(match);
             continue;
           }
 
           if (result.status === 'void') {
-            updatedMatches.push({ mapValue: { fields: { ...mf, status: { stringValue: 'void' } } } });
+            updatedMatches.push({ ...match, status: 'void' });
             continue;
           }
 
           if (result.status === 'finished') {
             const won = evaluate(pred, result.homeScore, result.awayScore);
             if (won === null) {
-              // Can't evaluate - mark won if goals scored (default)
-              console.log(`  Can't evaluate "${pred}" - defaulting to pending`);
               allSettled = false;
-              updatedMatches.push(mv);
+              updatedMatches.push(match);
               continue;
             }
             const newStatus = won ? 'win' : 'lost';
             if (!won) anyLost = true;
             updatedMatches.push({
-              mapValue: {
-                fields: {
-                  ...mf,
-                  status: { stringValue: newStatus },
-                  homeScore: { integerValue: String(result.homeScore) },
-                  awayScore: { integerValue: String(result.awayScore) },
-                }
-              }
+              ...match,
+              status: newStatus,
+              homeScore: result.homeScore,
+              awayScore: result.awayScore,
             });
-            console.log(`  ✅ ${home} vs ${away}: ${result.homeScore}-${result.awayScore} → ${newStatus}`);
+            console.log(`  ✅ ${home} ${result.homeScore}-${result.awayScore} ${away} → ${newStatus}`);
           }
         }
 
         if (anyLost) allSettled = true;
         const tipStatus = allSettled ? (anyLost ? 'lost' : 'won') : 'pending';
 
-        // Update tip
-        await fsPatch(`channels/${channelId}/tips/${tipId}`, {
-          matches: { arrayValue: { values: updatedMatches } },
-          status: { stringValue: tipStatus },
-        }, token);
+        // Update tip in Firestore
+        await tipDoc.ref.update({
+          matches: updatedMatches,
+          status: tipStatus,
+        });
 
-        if (allSettled && tipStatus !== 'pending') {
+        if (tipStatus !== 'pending') {
           settled++;
-          console.log(`📝 Tip ${tipId} → ${tipStatus}`);
+          console.log(`📝 Tip ${tipDoc.id} → ${tipStatus}`);
 
-          // Update tipster win rate
+          // Update tipster stats
           if (tipsterId) {
-            const userRes = await fsGet(`users/${tipsterId}`, token);
-            const uf = userRes.fields || {};
-            const totalTips = parseInt(uf.tipsCount?.integerValue || '0') || 0;
-            const wonTips = parseInt(uf.wonTips?.integerValue || '0') || 0;
-            const newWon = tipStatus === 'won' ? wonTips + 1 : wonTips;
-            const newTotal = totalTips > 0 ? totalTips : 1;
-            const winRate = Math.round((newWon / newTotal) * 100);
+            const userRef = db.collection('users').doc(tipsterId);
+            const userSnap = await userRef.get();
+            if (userSnap.exists) {
+              const userData = userSnap.data();
+              const totalTips = userData.tipsCount || 1;
+              const wonTips = (userData.wonTips || 0) + (tipStatus === 'won' ? 1 : 0);
+              const winRate = Math.round((wonTips / totalTips) * 100);
+              await userRef.update({ winRate, wonTips });
+            }
+          }
 
-            await fsPatch(`users/${tipsterId}`, {
-              winRate: { integerValue: String(winRate) },
-              wonTips: { integerValue: String(newWon) },
-              ...(tipStatus === 'won' ? {} : {}),
-            }, token);
-
-            // Notify tipster
-            await fsCreate('notifications', {
-              userId: { stringValue: tipsterId },
-              type: { stringValue: 'tip_result' },
-              title: { stringValue: tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost' },
-              message: { stringValue: `Your tip in ${channelName} has been verified as ${tipStatus.toUpperCase()}` },
-              read: { booleanValue: false },
-              createdAt: { timestampValue: new Date().toISOString() },
-            }, token);
+          // Notify tipster
+          if (tipsterId) {
+            await db.collection('notifications').add({
+              userId: tipsterId,
+              type: 'tip_result',
+              title: tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost',
+              message: `Your tip in "${channelName}" has been verified as ${tipStatus.toUpperCase()}`,
+              read: false,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
           }
         }
       }
     }
 
     console.log(`✅ Done. Checked: ${checked}, Settled: ${settled}`);
-    return { statusCode: 200, body: JSON.stringify({ success: true, checked, settled }) };
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ success: true, checked, settled }),
+    };
 
   } catch (e) {
-    console.error('❌ Fatal error:', e.message, e.stack);
-    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
+    console.error('❌ Error:', e.message);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: e.message }),
+    };
   }
 };
