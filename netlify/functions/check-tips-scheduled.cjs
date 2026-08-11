@@ -12,26 +12,33 @@ const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
 // ── JWT for Firebase Admin ─────────────────────────────────────
 const crypto = require('crypto');
 
-function base64url(str) {
-  return Buffer.from(str).toString('base64')
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
 async function getAccessToken() {
   const now = Math.floor(Date.now() / 1000);
-  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const payload = base64url(JSON.stringify({
+  
+  // Build JWT header and payload
+  const headerObj = { alg: 'RS256', typ: 'JWT' };
+  const payloadObj = {
     iss: CLIENT_EMAIL,
-    scope: 'https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/firebase',
+    sub: CLIENT_EMAIL,
+    scope: 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/datastore',
     aud: 'https://oauth2.googleapis.com/token',
     exp: now + 3600,
     iat: now,
-  }));
+  };
+
+  const header = Buffer.from(JSON.stringify(headerObj)).toString('base64url');
+  const payload = Buffer.from(JSON.stringify(payloadObj)).toString('base64url');
+  const signingInput = `${header}.${payload}`;
+  
   const sign = crypto.createSign('RSA-SHA256');
-  sign.update(`${header}.${payload}`);
-  const sig = sign.sign(PRIVATE_KEY, 'base64')
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  const jwt = `${header}.${payload}.${sig}`;
+  sign.update(signingInput);
+  sign.end();
+  const signature = sign.sign(PRIVATE_KEY).toString('base64url');
+  
+  const jwt = `${signingInput}.${signature}`;
+  
+  console.log('JWT client_email:', CLIENT_EMAIL);
+  console.log('Private key starts with:', PRIVATE_KEY.slice(0, 30));
 
   return new Promise((resolve, reject) => {
     const body = `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`;
@@ -39,13 +46,23 @@ async function getAccessToken() {
       hostname: 'oauth2.googleapis.com',
       path: '/token',
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
+      headers: { 
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body)
+      }
     }, res => {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => {
-        try { resolve(JSON.parse(data).access_token); }
-        catch (e) { reject(new Error('Failed to get access token: ' + data)); }
+        try {
+          const parsed = JSON.parse(data);
+          console.log('Token response:', JSON.stringify(parsed).slice(0, 200));
+          if (parsed.access_token) {
+            resolve(parsed.access_token);
+          } else {
+            reject(new Error('No access token: ' + data));
+          }
+        } catch (e) { reject(new Error('Token parse error: ' + data)); }
       });
     });
     req.on('error', reject);
