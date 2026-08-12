@@ -10,10 +10,19 @@
   node_bundler = "esbuild"
   external_node_modules = ["firebase-admin"]
 
+[functions."check-tips-scheduled"]
+  schedule = "*/30 * * * *"
+  node_bundler = "nft"
+  external_node_modules = ["firebase-admin"]
+
+[functions."trigger-tip-check"]
+  node_bundler = "nft"
+  external_node_modules = ["firebase-admin"]
+
+[functions."ocr-proxy"]
+  node_bundler = "nft"
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
-
-[functions."check-tips-scheduled"]
-  schedule = "*/30 * * * *"
