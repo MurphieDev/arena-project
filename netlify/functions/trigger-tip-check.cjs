@@ -2,11 +2,12 @@
 /* eslint-disable */
 
 exports.handler = async function(event) {
-  const secret = (event.queryStringParameters || {}).secret || 
-                 ((event.headers || {})['x-admin-secret']);
+  const params = event ? (event.queryStringParameters || {}) : {};
+  const headers = event ? (event.headers || {}) : {};
+  const secret = params.secret || headers['x-admin-secret'] || '';
   
   if (secret !== 'arena-admin-2024') {
-    return { statusCode: 401, body: 'Unauthorized' };
+    return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
   }
 
   // Lazy require inside handler to avoid esbuild issues
