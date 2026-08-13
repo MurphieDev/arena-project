@@ -2,6 +2,7 @@
 /* eslint-disable */
 
 exports.handler = async function(event) {
+  console.log('🔥 TRIGGER TIP CHECK VERSION 2');
   const params = event ? (event.queryStringParameters || {}) : {};
   const headers = event ? (event.headers || {}) : {};
   const secret = params.secret || headers['x-admin-secret'] || '';
