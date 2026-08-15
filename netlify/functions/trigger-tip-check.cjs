@@ -2,609 +2,218 @@
 /* eslint-disable */
 
 exports.handler = async function(event) {
-  console.log('🔥 TRIGGER TIP CHECK VERSION 3');
-
   const params = event ? (event.queryStringParameters || {}) : {};
   const headers = event ? (event.headers || {}) : {};
   const secret = params.secret || headers['x-admin-secret'] || '';
-
+  
   if (secret !== 'arena-admin-2024') {
-    return {
-      statusCode: 401,
-      body: JSON.stringify({ error: 'Unauthorized' }),
-    };
+    return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
   }
 
-  // Load Firebase Admin modules
-  const {
-    getApps,
-    initializeApp,
-    cert,
-  } = require('firebase-admin/app');
-
-  const {
-    getFirestore,
-    FieldValue,
-  } = require('firebase-admin/firestore');
-
+  // Lazy require inside handler to avoid esbuild issues
+  const admin = require('firebase-admin');
   const https = require('https');
 
-  // Initialize Firebase Admin
-  let firebaseApp;
-
-  if (getApps().length === 0) {
-    firebaseApp = initializeApp({
-      credential: cert({
+  if (!admin.apps.length) {
+    admin.initializeApp({
+      credential: admin.credential.cert({
         projectId: process.env.FIREBASE_PROJECT_ID,
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: (process.env.FIREBASE_PRIVATE_KEY || '')
-          .replace(/\\n/g, '\n'),
+        privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
       }),
     });
-  } else {
-    firebaseApp = getApps()[0];
   }
 
-  const db = getFirestore(firebaseApp);
-
-  // ── API Football ───────────────────────────────────────────────
+  const db = admin.firestore();
 
   function apiFootball(endpoint) {
     return new Promise(resolve => {
-      const req = https.request(
-        {
-          hostname: 'v3.football.api-sports.io',
-          path: endpoint,
-          headers: {
-            'x-apisports-key': process.env.API_FOOTBALL_KEY,
-          },
-        },
-        res => {
-          let data = '';
-
-          res.on('data', c => {
-            data += c;
-          });
-
-          res.on('end', () => {
-            try {
-              const parsed = JSON.parse(data);
-              resolve(parsed.response || []);
-            } catch {
-              resolve([]);
-            }
-          });
-        }
-      );
-
+      const req = https.request({
+        hostname: 'v3.football.api-sports.io',
+        path: endpoint,
+        headers: { 'x-apisports-key': process.env.API_FOOTBALL_KEY }
+      }, res => {
+        let data = '';
+        res.on('data', c => data += c);
+        res.on('end', () => {
+          try { resolve(JSON.parse(data).response || []); }
+          catch { resolve([]); }
+        });
+      });
       req.on('error', () => resolve([]));
       req.end();
     });
   }
 
-  // ── Team name matching ─────────────────────────────────────────
-
   function normalize(name) {
     if (!name) return '';
-
-    return name
-      .toLowerCase()
+    return name.toLowerCase()
       .replace(/\bfc\b|\bac\b|\bsc\b|\bcf\b/g, '')
       .replace(/manchester/g, 'man')
       .replace(/united/g, 'utd')
       .replace(/[^a-z0-9 ]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+      .replace(/\s+/g, ' ').trim();
   }
 
   function teamsMatch(a, b) {
-    const na = normalize(a);
-    const nb = normalize(b);
-
+    const na = normalize(a), nb = normalize(b);
     if (!na || !nb) return false;
-
-    if (na === nb || na.includes(nb) || nb.includes(na)) {
-      return true;
-    }
-
-    const wa = na
-      .split(' ')
-      .filter(w => w.length > 2);
-
-    const wb = nb
-      .split(' ')
-      .filter(w => w.length > 2);
-
+    if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+    const wa = na.split(' ').filter(w => w.length > 2);
+    const wb = nb.split(' ').filter(w => w.length > 2);
     return wb.some(w => wa.includes(w));
   }
 
-  // ── Team cache ─────────────────────────────────────────────────
-
   const teamCache = {};
-
   async function findTeamId(name) {
     if (!name) return null;
-
     const key = normalize(name);
-
-    if (teamCache[key] !== undefined) {
-      return teamCache[key];
-    }
-
-    const results = await apiFootball(
-      `/teams?search=${encodeURIComponent(name)}`
-    );
-
-    const best =
-      results.find(
-        r => teamsMatch(r && r.team && r.team.name, name)
-      ) || results[0];
-
-    teamCache[key] =
-      best && best.team && best.team.id
-        ? best.team.id
-        : null;
-
+    if (teamCache[key] !== undefined) return teamCache[key];
+    const results = await apiFootball(`/teams?search=${encodeURIComponent(name)}`);
+    const best = results.find(r => teamsMatch(r && r.team && r.team.name, name)) || results[0];
+    teamCache[key] = (best && best.team && best.team.id) ? best.team.id : null;
     return teamCache[key];
   }
 
-  // ── Match checking ─────────────────────────────────────────────
-
   async function checkMatch(home, away) {
-    if (!home || !away) {
-      return { status: 'not_found' };
-    }
-
-    const today = new Date()
-      .toISOString()
-      .split('T')[0];
-
-    const monthAgo = new Date(
-      Date.now() - 30 * 86400000
-    )
-      .toISOString()
-      .split('T')[0];
-
-    const teamId =
-      await findTeamId(home) ||
-      await findTeamId(away);
-
-    if (!teamId) {
-      return { status: 'not_found' };
-    }
-
+    if (!home || !away) return { status: 'not_found' };
+    const today = new Date().toISOString().split('T')[0];
+    const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
+    const teamId = await findTeamId(home) || await findTeamId(away);
+    if (!teamId) return { status: 'not_found' };
     for (const season of [2026, 2025, 2024]) {
-      const fixtures = await apiFootball(
-        `/fixtures?team=${teamId}&season=${season}&from=${monthAgo}&to=${today}`
-      );
-
+      const fixtures = await apiFootball(`/fixtures?team=${teamId}&season=${season}&from=${monthAgo}&to=${today}`);
       for (const f of fixtures) {
-        const fHome =
-          f &&
-          f.teams &&
-          f.teams.home &&
-          f.teams.home.name;
-
-        const fAway =
-          f &&
-          f.teams &&
-          f.teams.away &&
-          f.teams.away.name;
-
-        if (
-          teamsMatch(fHome, home) &&
-          teamsMatch(fAway, away)
-        ) {
-          const s =
-            f.fixture &&
-            f.fixture.status &&
-            f.fixture.status.short;
-
+        const fHome = f && f.teams && f.teams.home && f.teams.home.name;
+        const fAway = f && f.teams && f.teams.away && f.teams.away.name;
+        if (teamsMatch(fHome, home) && teamsMatch(fAway, away)) {
+          const s = f.fixture && f.fixture.status && f.fixture.status.short;
           if (['FT', 'AET', 'PEN'].includes(s)) {
-            return {
-              status: 'finished',
-              homeScore:
-                f.goals && f.goals.home != null
-                  ? f.goals.home
-                  : 0,
-              awayScore:
-                f.goals && f.goals.away != null
-                  ? f.goals.away
-                  : 0,
-            };
+            return { status: 'finished', homeScore: f.goals.home || 0, awayScore: f.goals.away || 0 };
           }
-
-          if (['CANC', 'PST', 'ABD'].includes(s)) {
-            return { status: 'void' };
-          }
-
-          if (
-            ['1H', 'HT', '2H', 'ET', 'P'].includes(s)
-          ) {
-            return { status: 'live' };
-          }
-
+          if (['CANC', 'PST', 'ABD'].includes(s)) return { status: 'void' };
+          if (['1H', 'HT', '2H', 'ET', 'P'].includes(s)) return { status: 'live' };
           return { status: 'scheduled' };
         }
       }
     }
-
     return { status: 'not_found' };
   }
 
-  // ── Prediction evaluation ─────────────────────────────────────
-
   function evaluate(pred, h, a) {
-    const p = (pred || '')
-      .toLowerCase()
-      .trim();
-
+    const p = (pred || '').toLowerCase().trim();
     if (!p) return null;
-
-    // Home win
-    if (
-      p === '1' ||
-      p === 'home' ||
-      p === 'home win'
-    ) {
-      return h > a;
-    }
-
-    // Draw
-    if (
-      p === 'x' ||
-      p === 'draw'
-    ) {
-      return h === a;
-    }
-
-    // Away win
-    if (
-      p === '2' ||
-      p === 'away' ||
-      p === 'away win'
-    ) {
-      return a > h;
-    }
-
-    // Double chance
-    if (p === '1x') {
-      return h >= a;
-    }
-
-    if (p === 'x2') {
-      return a >= h;
-    }
-
-    if (p === '12') {
-      return h !== a;
-    }
-
-    // Both teams to score
-    if (
-      p === 'gg' ||
-      p === 'btts'
-    ) {
-      return h > 0 && a > 0;
-    }
-
-    // Over
+    if (p === '1' || p === 'home' || p === 'home win') return h > a;
+    if (p === 'x' || p === 'draw') return h === a;
+    if (p === '2' || p === 'away' || p === 'away win') return a > h;
+    if (p === '1x') return h >= a;
+    if (p === 'x2') return a >= h;
+    if (p === '12') return h !== a;
+    if (p === 'gg' || p === 'btts') return h > 0 && a > 0;
     const over = p.match(/^over\s*([\d.]+)/);
-
-    if (over) {
-      return (
-        h + a >
-        parseFloat(over[1])
-      );
-    }
-
-    // Under
+    if (over) return (h + a) > parseFloat(over[1]);
     const under = p.match(/^under\s*([\d.]+)/);
-
-    if (under) {
-      return (
-        h + a <
-        parseFloat(under[1])
-      );
-    }
-
+    if (under) return (h + a) < parseFloat(under[1]);
     return null;
   }
 
-  // ── Main verification ─────────────────────────────────────────
-
   try {
-    console.log(
-      '🔄 Tip verification started:',
-      new Date().toISOString()
-    );
+    console.log('🔄 Tip verification started:', new Date().toISOString());
+    let checked = 0, settled = 0;
 
-    let checked = 0;
-    let settled = 0;
+    const channelsSnap = await db.collection('channels').get();
+    console.log('📡 Found channels:', channelsSnap.size);
 
-    // Get all channels
-    const channelsSnap =
-      await db.collection('channels').get();
-
-    console.log(
-      '📡 Found channels:',
-      channelsSnap.size
-    );
-
-    // Process every channel
     for (const channelDoc of channelsSnap.docs) {
       const channelData = channelDoc.data();
+      const channelName = channelData.name || channelDoc.id;
+      const tipsterId = channelData.ownerId || '';
 
-      const channelName =
-        channelData.name ||
-        channelDoc.id;
+      const tipsSnap = await db.collection('channels')
+        .doc(channelDoc.id)
+        .collection('tips')
+        .where('status', '==', 'pending')
+        .get();
 
-      const tipsterId =
-        channelData.ownerId || '';
+      if (tipsSnap.empty) continue;
+      console.log(`Channel "${channelName}": ${tipsSnap.size} pending tips`);
 
-      // Get pending tips
-      const tipsSnap =
-        await db
-          .collection('channels')
-          .doc(channelDoc.id)
-          .collection('tips')
-          .where('status', '==', 'pending')
-          .get();
-
-      if (tipsSnap.empty) {
-        continue;
-      }
-
-      console.log(
-        `Channel "${channelName}": ${tipsSnap.size} pending tips`
-      );
-
-      // Process tips
       for (const tipDoc of tipsSnap.docs) {
         const tipData = tipDoc.data();
-
-        const matches =
-          Array.isArray(tipData.matches)
-            ? tipData.matches
-            : [];
-
-        if (!matches.length) {
-          console.log(
-            `⚠️ Tip ${tipDoc.id} has no matches array`
-          );
-          continue;
-        }
+        const matches = tipData.matches || [];
+        if (!matches.length) continue;
 
         checked++;
-
         let allSettled = true;
         let anyLost = false;
-
         const updatedMatches = [];
 
-        // Check each match
         for (const match of matches) {
-          const currentStatus =
-            match.status || 'pending';
-
-          // Already settled
-          if (
-            ['win', 'lost', 'void'].includes(
-              currentStatus
-            )
-          ) {
-            if (currentStatus === 'lost') {
-              anyLost = true;
-            }
-
+          const currentStatus = match.status || 'pending';
+          if (['win', 'lost', 'void'].includes(currentStatus)) {
+            if (currentStatus === 'lost') anyLost = true;
             updatedMatches.push(match);
             continue;
           }
 
-          const home =
-            match.home || '';
+          const home = match.home || '';
+          const away = match.away || '';
+          const pred = match.prediction || tipData.prediction || '';
 
-          const away =
-            match.away || '';
+          console.log(`  Checking: "${home}" vs "${away}"`);
+          const result = await checkMatch(home, away);
+          console.log(`  Result: ${result.status}`);
 
-          const pred =
-            match.prediction ||
-            tipData.prediction ||
-            '';
-
-          console.log(
-            `  Checking: "${home}" vs "${away}"`
-          );
-
-          const result =
-            await checkMatch(home, away);
-
-          console.log(
-            `  Result: ${result.status}`
-          );
-
-          // Match isn't finished yet
-          if (
-            [
-              'pending',
-              'not_found',
-              'live',
-              'scheduled',
-            ].includes(result.status)
-          ) {
+          if (['pending', 'not_found', 'live', 'scheduled'].includes(result.status)) {
             allSettled = false;
-
             updatedMatches.push(match);
-
             continue;
           }
 
-          // Match void
           if (result.status === 'void') {
-            updatedMatches.push({
-              ...match,
-              status: 'void',
-            });
-
+            updatedMatches.push(Object.assign({}, match, { status: 'void' }));
             continue;
           }
 
-          // Match finished
           if (result.status === 'finished') {
-            const won = evaluate(
-              pred,
-              result.homeScore,
-              result.awayScore
-            );
-
-            // Unsupported prediction
-            if (won === null) {
-              console.log(
-                `⚠️ Unsupported prediction: "${pred}"`
-              );
-
-              allSettled = false;
-
-              updatedMatches.push(match);
-
-              continue;
-            }
-
-            const newStatus =
-              won ? 'win' : 'lost';
-
-            if (!won) {
-              anyLost = true;
-            }
-
-            updatedMatches.push({
-              ...match,
+            const won = evaluate(pred, result.homeScore, result.awayScore);
+            if (won === null) { allSettled = false; updatedMatches.push(match); continue; }
+            const newStatus = won ? 'win' : 'lost';
+            if (!won) anyLost = true;
+            updatedMatches.push(Object.assign({}, match, {
               status: newStatus,
               homeScore: result.homeScore,
               awayScore: result.awayScore,
-            });
-
-            console.log(
-              `  ✅ ${home} ${result.homeScore}-${result.awayScore} ${away} → ${newStatus}`
-            );
+            }));
+            console.log(`  ✅ ${home} ${result.homeScore}-${result.awayScore} ${away} → ${newStatus}`);
           }
         }
 
-        // If any match lost,
-        // the whole tip is lost.
-        if (anyLost) {
-          allSettled = true;
-        }
-
-        const tipStatus =
-          allSettled
-            ? anyLost
-              ? 'lost'
-              : 'won'
-            : 'pending';
-
-        // Update Firestore
-        await tipDoc.ref.update({
-          matches: updatedMatches,
-          status: tipStatus,
-        });
-
-        console.log(
-          `📝 Tip ${tipDoc.id} → ${tipStatus}`
-        );
-
-        // ── Settlement ──────────────────────────────
+        if (anyLost) allSettled = true;
+        const tipStatus = allSettled ? (anyLost ? 'lost' : 'won') : 'pending';
+        await tipDoc.ref.update({ matches: updatedMatches, status: tipStatus });
 
         if (tipStatus !== 'pending') {
           settled++;
-
-          // Update tipster stats
           if (tipsterId) {
-            const userRef =
-              db.collection('users')
-                .doc(tipsterId);
-
-            const userSnap =
-              await userRef.get();
-
-            if (userSnap.exists) {
-              const userData =
-                userSnap.data();
-
-              const totalTips =
-                userData.tipsCount || 1;
-
-              const wonTips =
-                (userData.wonTips || 0) +
-                (tipStatus === 'won'
-                  ? 1
-                  : 0);
-
-              const winRate =
-                Math.round(
-                  (wonTips / totalTips) * 100
-                );
-
-              await userRef.update({
-                winRate,
-                wonTips,
-              });
-            }
-          }
-
-          // Notify tipster
-          if (tipsterId) {
-            await db
-              .collection('notifications')
-              .add({
-                userId: tipsterId,
-                type: 'tip_result',
-
-                title:
-                  tipStatus === 'won'
-                    ? '✅ Tip Won!'
-                    : '❌ Tip Lost',
-
-                message:
-                  `Your tip in "${channelName}" → ${tipStatus.toUpperCase()}`,
-
-                read: false,
-
-                createdAt:
-                  FieldValue.serverTimestamp(),
-              });
+            await db.collection('notifications').add({
+              userId: tipsterId,
+              type: 'tip_result',
+              title: tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost',
+              message: `Your tip in "${channelName}" → ${tipStatus.toUpperCase()}`,
+              read: false,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
           }
         }
       }
     }
 
-    console.log(
-      `✅ Done. Checked: ${checked}, Settled: ${settled}`
-    );
+    console.log(`✅ Done. Checked: ${checked}, Settled: ${settled}`);
+    return { statusCode: 200, body: JSON.stringify({ success: true, checked, settled }) };
 
-    return {
-      statusCode: 200,
-
-      body: JSON.stringify({
-        success: true,
-        checked,
-        settled,
-      }),
-    };
-
-  } catch (e) {
-    console.error(
-      '❌ Error:',
-      e.message,
-      e.stack
-    );
-
-    return {
-      statusCode: 500,
-
-      body: JSON.stringify({
-        error: e.message,
-      }),
-    };
+  } catch(e) {
+    console.error('❌ Error:', e.message, e.stack);
+    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
   }
 };
