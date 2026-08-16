@@ -113,7 +113,6 @@ exports.handler = async function(event) {
   }
 
   try {
-    const db = getFirestore(app);
     console.log('🔄 Starting tip verification:', new Date().toISOString());
     let checked = 0, settled = 0;
 
