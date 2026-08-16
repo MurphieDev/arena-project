@@ -97,6 +97,29 @@ exports.handler = async function (event) {
           });
 
     const db = getFirestore(app);
+// AUTH DIAGNOSTIC
+try {
+  console.log('🔐 Testing Firebase authentication...');
+
+  const testSnap = await db.collection('channels').limit(1).get();
+
+  console.log('✅ FIREBASE AUTH SUCCESS');
+  console.log('📡 Channels accessible:', testSnap.size);
+} catch (authError) {
+  console.error('❌ FIREBASE AUTH FAILED');
+  console.error('Error code:', authError.code);
+  console.error('Error message:', authError.message);
+
+  return {
+    statusCode: 500,
+    body: JSON.stringify({
+      success: false,
+      stage: 'firebase_authentication',
+      error: authError.message,
+      code: authError.code || null
+    })
+  };
+}
 
     // Actually contact Firestore.
     const testSnap = await db
