@@ -1,31 +1,29 @@
-// netlify/functions/trigger-tip-check.cjs
 'use strict';
 
 const { initializeApp, getApps, cert } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const https = require('https');
 
-// Initialize at module level
-try {
-  if (!admin.apps || !admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert({
+// ── Init ───────────────────────────────────────────────────────
+const firebaseApp = getApps().length
+  ? getApps()[0]
+  : initializeApp({
+      credential: cert({
         projectId: process.env.FIREBASE_PROJECT_ID,
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
         privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
       }),
     });
-  }
-} catch(e) {
-  console.error('Firebase init error:', e.message);
-}
 
+const db = getFirestore(firebaseApp);
+
+// ── Helpers ────────────────────────────────────────────────────
 function apiFootball(endpoint) {
   return new Promise(resolve => {
     const req = https.request({
       hostname: 'v3.football.api-sports.io',
       path: endpoint,
-      headers: { 'x-apisports-key': process.env.API_FOOTBALL_KEY }
+      headers: { 'x-apisports-key': process.env.API_FOOTBALL_KEY },
     }, res => {
       let data = '';
       res.on('data', c => data += c);
@@ -74,7 +72,9 @@ async function checkMatch(home, away) {
     const fixtures = await apiFootball('/fixtures?team=' + teamId + '&season=' + season + '&from=' + monthAgo + '&to=' + today);
     for (const f of fixtures) {
       if (!f || !f.teams) continue;
-      if (teamsMatch(f.teams.home && f.teams.home.name, home) && teamsMatch(f.teams.away && f.teams.away.name, away)) {
+      const fh = f.teams.home && f.teams.home.name;
+      const fa = f.teams.away && f.teams.away.name;
+      if (teamsMatch(fh, home) && teamsMatch(fa, away)) {
         const s = f.fixture && f.fixture.status && f.fixture.status.short;
         if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home || 0, awayScore: f.goals.away || 0 };
         if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
@@ -103,6 +103,7 @@ function evaluate(pred, h, a) {
   return null;
 }
 
+// ── Handler ────────────────────────────────────────────────────
 exports.handler = async function(event) {
   const qs = (event && event.queryStringParameters) || {};
   const hdrs = (event && event.headers) || {};
@@ -113,7 +114,7 @@ exports.handler = async function(event) {
   }
 
   try {
-    console.log('🔄 Starting tip verification:', new Date().toISOString());
+    console.log('🔄 Tip verification started:', new Date().toISOString());
     let checked = 0, settled = 0;
 
     const channelsSnap = await db.collection('channels').get();
@@ -205,7 +206,7 @@ exports.handler = async function(event) {
     return { statusCode: 200, body: JSON.stringify({ success: true, checked, settled }) };
 
   } catch(e) {
-    console.error('❌ Error:', e.message);
+    console.error('❌ Error:', e.message, e.stack);
     return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
   }
 };
