@@ -1,7 +1,8 @@
 // netlify/functions/trigger-tip-check.cjs
 'use strict';
 
-const admin = require('firebase-admin');
+const { initializeApp, getApps, cert } = require('firebase-admin/app');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const https = require('https');
 
 // Initialize at module level
@@ -112,7 +113,7 @@ exports.handler = async function(event) {
   }
 
   try {
-    const db = admin.firestore();
+    const db = getFirestore();
     console.log('🔄 Starting tip verification:', new Date().toISOString());
     let checked = 0, settled = 0;
 
@@ -194,7 +195,7 @@ exports.handler = async function(event) {
               title: tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost',
               message: 'Your tip in "' + channelName + '" → ' + tipStatus.toUpperCase(),
               read: false,
-              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              createdAt: FieldValue.serverTimestamp(),
             });
           }
         }
