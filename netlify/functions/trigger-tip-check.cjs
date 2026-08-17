@@ -23,14 +23,17 @@ function request(options, body) {
   });
 }
 
-// Sign in anonymously to get auth token
+// Sign in with email/password to get auth token
 async function getAuthToken() {
+  const email = process.env.VERIFY_EMAIL || 'tipverify@arena.app';
+  const password = process.env.VERIFY_PASSWORD || 'ArenaVerify2026!';
+  
   const res = await request({
     hostname: 'identitytoolkit.googleapis.com',
-    path: `/v1/accounts:signUp?key=${WEB_API_KEY}`,
+    path: `/v1/accounts:signInWithPassword?key=${WEB_API_KEY}`,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' }
-  }, { returnSecureToken: true });
+  }, { email, password, returnSecureToken: true });
   
   if (res.data.idToken) return res.data.idToken;
   throw new Error('Failed to get auth token: ' + JSON.stringify(res.data));
