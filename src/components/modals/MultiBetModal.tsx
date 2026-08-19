@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Send, Trash2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -9,17 +9,39 @@ interface MultiBetModalProps {
   onSubmit: (data: any) => void;
 }
 
-const AVAILABLE_GAMES = [
-  { id: '1', home: 'Manchester United', away: 'Liverpool', odds: '1.85', date: '2026-06-17' },
-  { id: '2', home: 'Real Madrid', away: 'Barcelona', odds: '1.95', date: '2026-06-17' },
-  { id: '3', home: 'Bayern Munich', away: 'Dortmund', odds: '1.72', date: '2026-06-18' },
-];
+const API_KEY = '71b6bd51ec2a77eee7d4a472b85436f0';
 
 export function MultiBetModal({ isOpen, onClose, onSubmit }: MultiBetModalProps) {
   const [games, setGames] = useState<any[]>([]);
   const [reasoning, setReasoning] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showGameList, setShowGameList] = useState(false);
+  const [availableGames, setAvailableGames] = useState<any[]>([]);
+  const [loadingGames, setLoadingGames] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setLoadingGames(true);
+    const today = new Date().toISOString().split('T')[0];
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    Promise.all([
+      fetch(`https://v3.football.api-sports.io/fixtures?date=${today}&status=NS`, { headers: { 'x-apisports-key': API_KEY } }).then(r => r.json()).catch(() => ({ response: [] })),
+      fetch(`https://v3.football.api-sports.io/fixtures?date=${tomorrow}&status=NS`, { headers: { 'x-apisports-key': API_KEY } }).then(r => r.json()).catch(() => ({ response: [] })),
+    ]).then(([t, tm]) => {
+      const fixtures = [...(t.response || []), ...(tm.response || [])];
+      setAvailableGames(fixtures.map((f: any) => ({
+        id: String(f.fixture?.id),
+        home: f.teams?.home?.name || '',
+        away: f.teams?.away?.name || '',
+        odds: '',
+        date: f.fixture?.date?.split('T')[0] || today,
+        league: f.league?.name || '',
+        matchTime: f.fixture?.date ? new Date(f.fixture.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+        prediction: '1',
+      })));
+      setLoadingGames(false);
+    });
+  }, [isOpen]);
 
   const addGame = (game: any) => {
     if (!games.find(g => g.id === game.id)) {
@@ -41,15 +63,20 @@ export function MultiBetModal({ isOpen, onClose, onSubmit }: MultiBetModalProps)
       alert('Multi-Bet requires at least 2 games and reasoning');
       return;
     }
-    onSubmit({ games, reasoning, totalOdds, potentialReturn });
+    const matches = games.map((g: any) => ({
+      home: g.home, away: g.away, odds: g.odds || '',
+      prediction: g.prediction || '1', status: 'pending',
+      matchTime: g.matchTime || '', league: g.league || '',
+    }));
+    onSubmit({ games, matches, reasoning, totalOdds, potentialReturn });
     setGames([]);
     setReasoning('');
     onClose();
   };
 
-  const filteredGames = AVAILABLE_GAMES.filter(g =>
-    `${g.home} ${g.away}`.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredGames = availableGames.filter(g =>
+    `${g.home} ${g.away} ${g.league}`.toLowerCase().includes(searchQuery.toLowerCase())
+  ).slice(0, 10);
 
   return (
     <AnimatePresence>

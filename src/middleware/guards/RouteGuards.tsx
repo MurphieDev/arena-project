@@ -1,80 +1,39 @@
-// ── Route Guards ──────────────────────────────────────────────────────────────
+// src/middleware/guards/RouteGuards.tsx
+import { Navigate } from 'react-router-dom';
+import { useAuth } from '../../auth/hooks/AuthContext';
 
-import { Navigate, useLocation } from 'react-router-dom';
-import type { AppUser, UserRole } from '../../core/types';
-import { ROUTE_ACCESS } from '../../core/types';
-
-interface RouteGuardProps {
-  children: React.ReactNode;
-  user: AppUser | null;
-  requiredRole?: UserRole;
-  allowedRoles?: UserRole[];
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-black">
+      <div className="flex flex-col items-center gap-3">
+        <div className="w-12 h-12 rounded-full border-4 border-[#ef4444] border-t-transparent animate-spin" />
+        <p className="text-sm font-bold text-white tracking-wider">Loading Arena...</p>
+      </div>
+    </div>
+  );
 }
 
-export const RouteGuard: React.FC<RouteGuardProps> = ({
-  children,
-  user,
-  requiredRole,
-  allowedRoles,
-}) => {
-  const location = useLocation();
+// Protects authenticated routes - redirects to /auth if not logged in
+export function RouteGuard({ user, children }: { user: any; children: React.ReactNode }) {
+  const { loading } = useAuth();
 
-  // If no user, redirect to auth
-  if (!user) {
-    return <Navigate to="/auth" state={{ from: location }} replace />;
-  }
+  // CRITICAL: Show loading while Firebase checks auth state
+  // This prevents redirect to /auth on refresh
+  if (loading) return <LoadingScreen />;
 
-  // Check role-based access
-  if (requiredRole && user.role !== requiredRole) {
-    return <Navigate to="/unauthorized" replace />;
-  }
-
-  if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return <Navigate to="/unauthorized" replace />;
-  }
-
-  // Check route access patterns
-  const userRoutes = ROUTE_ACCESS[user.role];
-  const currentPath = location.pathname;
-
-  const hasAccess = userRoutes.some((route: string) => {
-    if (route.endsWith('/*')) {
-      const baseRoute = route.slice(0, -2);
-      return currentPath.startsWith(baseRoute);
-    }
-    return route === currentPath;
-  });
-
-  if (!hasAccess) {
-    return <Navigate to="/unauthorized" replace />;
-  }
+  if (!user) return <Navigate to="/auth" replace />;
 
   return <>{children}</>;
-};
+}
 
-export const AuthGuard: React.FC<{ children: React.ReactNode; user: AppUser | null }> = ({
-  children,
-  user,
-}) => {
-  const location = useLocation();
+// Protects auth routes - redirects to / if already logged in
+export function AuthGuard({ user, children }: { user: any; children: React.ReactNode }) {
+  const { loading } = useAuth();
 
-  if (user) {
-    // Redirect authenticated users away from auth pages
-    if (location.pathname.startsWith('/auth')) {
-      return <Navigate to="/" replace />;
-    }
-  }
+  // Wait for auth to initialize before redirecting
+  if (loading) return <LoadingScreen />;
+
+  if (user) return <Navigate to="/" replace />;
 
   return <>{children}</>;
-};
-
-export const RoleBasedRedirect: React.FC<{ user: AppUser }> = ({ user }) => {
-  switch (user.role) {
-    case 'tipster':
-      return <Navigate to="/dashboard" replace />;
-    case 'admin':
-      return <Navigate to="/admin" replace />;
-    default:
-      return <Navigate to="/" replace />;
-  }
-};
+}
