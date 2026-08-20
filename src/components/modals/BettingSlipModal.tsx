@@ -129,15 +129,32 @@ export function BettingSlipModal({ isOpen, onClose, onSubmit }: BettingSlipModal
                         {ocrResult.bookingCode && <p className="text-xs text-[#71767b]">Code: <span className="text-white font-bold">{ocrResult.bookingCode}</span></p>}
                         {ocrResult.totalOdds && <p className="text-xs text-[#71767b]">Total Odds: <span className="text-white font-bold">{ocrResult.totalOdds}</span></p>}
                         {ocrResult.matches.length > 0 && (
-                          <div>
-                            <p className="text-xs text-[#71767b] mb-1">Matches found ({ocrResult.matches.length}):</p>
+                          <div className="space-y-2">
+                            <p className="text-xs font-bold text-white">Set prediction for each match:</p>
                             {ocrResult.matches.map((m: any, i: number) => (
-                              <p key={i} className="text-xs text-white">{m.home} vs {m.away}</p>
+                              <div key={i} className="bg-[#0a0a0a] rounded-lg p-2">
+                                <p className="text-xs text-white font-semibold mb-1">{m.home} vs {m.away}</p>
+                                <div className="flex flex-wrap gap-1">
+                                  {['1','X','2','1X','X2','12','GG','NG','Over 1.5','Over 2.5','Under 2.5'].map(pred => (
+                                    <button key={pred}
+                                      onClick={() => {
+                                        const updated = [...ocrResult.matches];
+                                        updated[i] = { ...updated[i], prediction: pred };
+                                        setOcrResult({ ...ocrResult, matches: updated });
+                                      }}
+                                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold transition-all ${
+                                        m.prediction === pred ? 'bg-[#ef4444] text-white' : 'bg-[#1f1f1f] text-[#71767b]'
+                                      }`}>
+                                      {pred}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
                             ))}
                           </div>
                         )}
                         {ocrResult.matches.length === 0 && (
-                          <p className="text-xs text-yellow-400">No matches detected automatically. Tip will be posted with the image.</p>
+                          <p className="text-xs text-yellow-400">No matches detected. Tip will be posted with image only.</p>
                         )}
                       </div>
                     )}

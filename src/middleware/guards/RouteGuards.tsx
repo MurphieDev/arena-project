@@ -14,7 +14,7 @@ function LoadingScreen() {
 }
 
 // Protects authenticated routes - redirects to /auth if not logged in
-export function RouteGuard({ user, children }: { user: any; children: React.ReactNode }) {
+export function RouteGuard({ user, children, allowedRoles }: { user: any; children: React.ReactNode; allowedRoles?: string[] }) {
   const { loading } = useAuth();
 
   // CRITICAL: Show loading while Firebase checks auth state
@@ -22,6 +22,14 @@ export function RouteGuard({ user, children }: { user: any; children: React.Reac
   if (loading) return <LoadingScreen />;
 
   if (!user) return <Navigate to="/auth" replace />;
+  
+  // Check role if allowedRoles specified
+  if (allowedRoles && allowedRoles.length > 0) {
+    const userRole = (user as any)?.role || 'user';
+    if (!allowedRoles.includes(userRole)) {
+      return <Navigate to="/" replace />;
+    }
+  }
 
   return <>{children}</>;
 }

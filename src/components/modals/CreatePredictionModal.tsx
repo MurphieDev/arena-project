@@ -129,15 +129,16 @@ export function CreatePredictionModal({ isOpen, onClose, onSubmit }: CreatePredi
     if (games.length === 0) { alert('Please add at least one game'); return; }
     if (!reasoning.trim()) { alert('Please add your reasoning'); return; }
 
-    const matches = games.map(g => ({
+    const matches: SelectedGame[] = games.map(g => ({
+      id: g.id,
       home: g.home,
       away: g.away,
       odds: g.odds || '',
       prediction: g.prediction || '1',
       status: 'pending',
+      date: g.date || '',
       matchTime: g.matchTime || '',
       league: g.league || '',
-      date: g.date || '',
     }));
 
     onSubmit({
