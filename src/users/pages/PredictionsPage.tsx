@@ -520,26 +520,37 @@ function ChannelFeed({ ch, onBack, isTipster = false }: { ch: Channel; onBack: (
         isOpen={showCreatePredictionModal}
         onClose={() => setShowCreatePredictionModal(false)}
         onSubmit={async (data) => {
-          if (userId) {
-            try {
-              const cleanData: Record<string, any> = {
-                tipsterId: userId,
-                tipsterName: currentUser?.name || currentUser?.displayName || '',
-                status: 'pending',
-                likesCount: 0,
-                commentsCount: 0,
-                source: 'manual',
-                createdAt: serverTimestamp(),
-              };
-              for (const key of Object.keys(data)) {
-                const val = data[key];
-                if (val !== undefined && val !== null && !(val instanceof File)) {
-                  cleanData[key] = val;
-                }
-              }
-              await addDoc(collection(db, 'channels', ch.id, 'tips'), cleanData);
-              await updateDoc(doc(db, 'users', userId), { tipsCount: increment(1) });
-            } catch(e) { console.error('Error posting prediction:', e); }
+          if (!userId) { alert('Please sign in first'); return; }
+          if (!ch?.id) { alert('No channel selected'); return; }
+          try {
+            const matches = (data.matches || data.games || []).map((m: any) => ({
+              home: m.home || '',
+              away: m.away || '',
+              odds: String(m.odds || ''),
+              prediction: m.prediction || '1',
+              status: 'pending',
+              matchTime: m.matchTime || '',
+              league: m.league || '',
+              date: m.date || '',
+            }));
+            const tipData: Record<string, any> = {
+              matches,
+              totalOdds: String(data.totalOdds || '0'),
+              reasoning: data.reasoning || '',
+              tipsterId: userId,
+              tipsterName: currentUser?.name || currentUser?.displayName || '',
+              status: 'pending',
+              likesCount: 0,
+              commentsCount: 0,
+              source: 'manual',
+              createdAt: serverTimestamp(),
+            };
+            await addDoc(collection(db, 'channels', ch.id, 'tips'), tipData);
+            await updateDoc(doc(db, 'users', userId), { tipsCount: increment(1) });
+            console.log('✅ Tip posted successfully');
+          } catch(e: any) { 
+            console.error('Error posting prediction:', e);
+            alert('Failed to post tip: ' + e.message);
           }
           setShowCreatePredictionModal(false);
         }}

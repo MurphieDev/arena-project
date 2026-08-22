@@ -1,52 +1,108 @@
-// netlify/functions/check-tips-scheduled.cjs
-const admin = require('firebase-admin');
+'use strict';
+
 const https = require('https');
 
-// Initialize Firebase Admin
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: (process.env.FIREBASE_PRIVATE_KEY || '')
-        .replace(/\\n/g, '\n')
-        .replace(/\n/g, '\n')
-        .replace(/"/g, ''),
-    }),
+// Use Firebase REST API with Web API Key instead of Admin SDK
+const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'sport-x-af95c';
+const WEB_API_KEY = process.env.FIREBASE_TOKEN || 'AIzaSyDaegUsnDK9H1D0_r5Hnf-IAaCUqBT-BU4';
+const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
+
+function request(options, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode, data: {} }); }
+      });
+    });
+    req.on('error', reject);
+    if (body) req.write(typeof body === 'string' ? body : JSON.stringify(body));
+    req.end();
   });
 }
 
-const db = admin.firestore();
+// Sign in with email/password to get auth token
+async function getAuthToken() {
+  const email = process.env.VERIFY_EMAIL || 'tipverify@arena.app';
+  const password = process.env.VERIFY_PASSWORD || 'ArenaVerify2026!';
+  
+  const res = await request({
+    hostname: 'identitytoolkit.googleapis.com',
+    path: `/v1/accounts:signInWithPassword?key=${WEB_API_KEY}`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  }, { email, password, returnSecureToken: true });
+  
+  if (res.data.idToken) return res.data.idToken;
+  throw new Error('Failed to get auth token: ' + JSON.stringify(res.data));
+}
 
-// ── API Football ───────────────────────────────────────────────
+// Firestore REST
+const FS_BASE = `/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
+
+async function fsGet(path, token) {
+  const res = await request({
+    hostname: 'firestore.googleapis.com',
+    path: `${FS_BASE}/${path}`,
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return res.data;
+}
+
+async function fsList(path, token) {
+  const res = await request({
+    hostname: 'firestore.googleapis.com',
+    path: `${FS_BASE}/${path}?pageSize=300`,
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return res.data;
+}
+
+async function fsUpdate(path, fields, token) {
+  const fieldMask = Object.keys(fields).map(k => `updateMask.fieldPaths=${k}`).join('&');
+  const res = await request({
+    hostname: 'firestore.googleapis.com',
+    path: `${FS_BASE}/${path}?${fieldMask}`,
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  }, { fields });
+  return res.data;
+}
+
+async function fsAdd(path, fields, token) {
+  const res = await request({
+    hostname: 'firestore.googleapis.com',
+    path: `${FS_BASE}/${path}`,
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  }, { fields });
+  return res.data;
+}
+
 function apiFootball(endpoint) {
   return new Promise(resolve => {
     const req = https.request({
       hostname: 'v3.football.api-sports.io',
       path: endpoint,
-      headers: { 'x-apisports-key': process.env.API_FOOTBALL_KEY }
+      headers: { 'x-apisports-key': API_FOOTBALL_KEY }
     }, res => {
       let data = '';
       res.on('data', c => data += c);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data).response || []); }
-        catch { resolve([]); }
-      });
+      res.on('end', () => { try { resolve(JSON.parse(data).response || []); } catch { resolve([]); } });
     });
     req.on('error', () => resolve([]));
     req.end();
   });
 }
 
-// ── Team name matching ─────────────────────────────────────────
 function normalize(name) {
   if (!name) return '';
   return name.toLowerCase()
     .replace(/\bfc\b|\bac\b|\bsc\b|\bcf\b/g, '')
-    .replace(/manchester/g, 'man')
-    .replace(/united/g, 'utd')
-    .replace(/[^a-z0-9 ]/g, '')
-    .replace(/\s+/g, ' ').trim();
+    .replace(/manchester/g, 'man').replace(/united/g, 'utd')
+    .replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 function teamsMatch(a, b) {
@@ -63,9 +119,9 @@ async function findTeamId(name) {
   if (!name) return null;
   const key = normalize(name);
   if (teamCache[key] !== undefined) return teamCache[key];
-  const results = await apiFootball(`/teams?search=${encodeURIComponent(name)}`);
-  const best = results.find(r => teamsMatch(r?.team?.name, name)) || results[0];
-  teamCache[key] = best?.team?.id || null;
+  const results = await apiFootball('/teams?search=' + encodeURIComponent(name));
+  const best = results.find(r => r && r.team && teamsMatch(r.team.name, name)) || results[0];
+  teamCache[key] = (best && best.team) ? best.team.id : null;
   return teamCache[key];
 }
 
@@ -76,15 +132,16 @@ async function checkMatch(home, away) {
   const teamId = await findTeamId(home) || await findTeamId(away);
   if (!teamId) return { status: 'not_found' };
   for (const season of [2026, 2025, 2024]) {
-    const fixtures = await apiFootball(`/fixtures?team=${teamId}&season=${season}&from=${monthAgo}&to=${today}`);
+    const fixtures = await apiFootball('/fixtures?team=' + teamId + '&season=' + season + '&from=' + monthAgo + '&to=' + today);
     for (const f of fixtures) {
-      if (teamsMatch(f?.teams?.home?.name, home) && teamsMatch(f?.teams?.away?.name, away)) {
-        const s = f?.fixture?.status?.short;
-        if (['FT', 'AET', 'PEN'].includes(s)) {
-          return { status: 'finished', homeScore: f.goals.home ?? 0, awayScore: f.goals.away ?? 0 };
-        }
-        if (['CANC', 'PST', 'ABD'].includes(s)) return { status: 'void' };
-        if (['1H', 'HT', '2H', 'ET', 'P'].includes(s)) return { status: 'live' };
+      if (!f || !f.teams) continue;
+      const fh = f.teams.home && f.teams.home.name;
+      const fa = f.teams.away && f.teams.away.name;
+      if (teamsMatch(fh, home) && teamsMatch(fa, away)) {
+        const s = f.fixture && f.fixture.status && f.fixture.status.short;
+        if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home || 0, awayScore: f.goals.away || 0 };
+        if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
+        if (['1H','HT','2H','ET','P'].includes(s)) return { status: 'live' };
         return { status: 'scheduled' };
       }
     }
@@ -106,39 +163,63 @@ function evaluate(pred, h, a) {
   if (over) return (h + a) > parseFloat(over[1]);
   const under = p.match(/^under\s*([\d.]+)/);
   if (under) return (h + a) < parseFloat(under[1]);
-  const score = p.match(/^(\d+)[-:](\d+)$/);
-  if (score) return h === parseInt(score[1]) && a === parseInt(score[2]);
   return null;
 }
 
-// ── Main handler ───────────────────────────────────────────────
-exports.handler = async function () {
-  console.log('🔄 Tip verification started:', new Date().toISOString());
+function toValue(v) {
+  if (v === null || v === undefined) return { nullValue: null };
+  if (typeof v === 'boolean') return { booleanValue: v };
+  if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+  if (typeof v === 'string') return { stringValue: v };
+  if (Array.isArray(v)) return { arrayValue: { values: v.map(toValue) } };
+  if (typeof v === 'object') return { mapValue: { fields: Object.fromEntries(Object.entries(v).map(([k, val]) => [k, toValue(val)])) } };
+  return { stringValue: String(v) };
+}
 
-  let checked = 0, settled = 0;
+function fromValue(v) {
+  if (!v) return null;
+  if ('stringValue' in v) return v.stringValue;
+  if ('integerValue' in v) return parseInt(v.integerValue);
+  if ('doubleValue' in v) return v.doubleValue;
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('nullValue' in v) return null;
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fromValue);
+  if ('mapValue' in v) return Object.fromEntries(Object.entries(v.mapValue.fields || {}).map(([k, val]) => [k, fromValue(val)]));
+  return null;
+}
 
+function fromDoc(doc) {
+  if (!doc || !doc.fields) return {};
+  return Object.fromEntries(Object.entries(doc.fields).map(([k, v]) => [k, fromValue(v)]));
+}
+
+exports.handler = async function(event) {
   try {
-    // Get all channels
-    const channelsSnap = await db.collection('channels').get();
-    console.log(`📡 Found ${channelsSnap.size} channels`);
+    console.log('🔄 Getting auth token...');
+    const token = await getAuthToken();
+    console.log('✅ Got token');
 
-    for (const channelDoc of channelsSnap.docs) {
-      const channelData = channelDoc.data();
-      const channelName = channelData.name || channelDoc.id;
+    let checked = 0, settled = 0;
+
+    const channelsRes = await fsList('channels', token);
+    const channels = channelsRes.documents || [];
+    console.log('📡 Channels found:', channels.length);
+
+    for (const channelDoc of channels) {
+      const channelId = channelDoc.name.split('/').pop();
+      const channelData = fromDoc(channelDoc);
+      const channelName = channelData.name || channelId;
       const tipsterId = channelData.ownerId || '';
 
-      // Get pending tips
-      const tipsSnap = await db.collection('channels')
-        .doc(channelDoc.id)
-        .collection('tips')
-        .where('status', '==', 'pending')
-        .get();
+      const tipsRes = await fsList(`channels/${channelId}/tips`, token);
+      const pendingTips = (tipsRes.documents || []).filter(t => fromDoc(t).status === 'pending');
 
-      if (tipsSnap.empty) continue;
-      console.log(`Channel "${channelName}": ${tipsSnap.size} pending tips`);
+      if (!pendingTips.length) continue;
+      console.log('Channel "' + channelName + '": ' + pendingTips.length + ' pending tips');
 
-      for (const tipDoc of tipsSnap.docs) {
-        const tipData = tipDoc.data();
+      for (const tipDoc of pendingTips) {
+        const tipId = tipDoc.name.split('/').pop();
+        const tipData = fromDoc(tipDoc);
         const matches = tipData.matches || [];
         if (!matches.length) continue;
 
@@ -149,7 +230,7 @@ exports.handler = async function () {
 
         for (const match of matches) {
           const currentStatus = match.status || 'pending';
-          if (['win', 'lost', 'void'].includes(currentStatus)) {
+          if (['win','lost','void'].includes(currentStatus)) {
             if (currentStatus === 'lost') anyLost = true;
             updatedMatches.push(match);
             continue;
@@ -159,92 +240,64 @@ exports.handler = async function () {
           const away = match.away || '';
           const pred = match.prediction || tipData.prediction || '';
 
-          console.log(`  Checking: "${home}" vs "${away}" | pred: "${pred}"`);
+          console.log('Checking: "' + home + '" vs "' + away + '"');
           const result = await checkMatch(home, away);
-          console.log(`  Result: ${result.status}`);
+          console.log('Result:', result.status);
 
-          if (['pending', 'not_found', 'live', 'scheduled'].includes(result.status)) {
+          if (['pending','not_found','live','scheduled'].includes(result.status)) {
             allSettled = false;
             updatedMatches.push(match);
             continue;
           }
 
           if (result.status === 'void') {
-            updatedMatches.push({ ...match, status: 'void' });
+            updatedMatches.push(Object.assign({}, match, { status: 'void' }));
             continue;
           }
 
           if (result.status === 'finished') {
             const won = evaluate(pred, result.homeScore, result.awayScore);
-            if (won === null) {
-              allSettled = false;
-              updatedMatches.push(match);
-              continue;
-            }
+            if (won === null) { allSettled = false; updatedMatches.push(match); continue; }
             const newStatus = won ? 'win' : 'lost';
             if (!won) anyLost = true;
-            updatedMatches.push({
-              ...match,
+            updatedMatches.push(Object.assign({}, match, {
               status: newStatus,
               homeScore: result.homeScore,
               awayScore: result.awayScore,
-            });
-            console.log(`  ✅ ${home} ${result.homeScore}-${result.awayScore} ${away} → ${newStatus}`);
+            }));
+            console.log('✅ ' + home + ' ' + result.homeScore + '-' + result.awayScore + ' ' + away + ' → ' + newStatus);
           }
         }
 
         if (anyLost) allSettled = true;
         const tipStatus = allSettled ? (anyLost ? 'lost' : 'won') : 'pending';
 
-        // Update tip in Firestore
-        await tipDoc.ref.update({
-          matches: updatedMatches,
-          status: tipStatus,
-        });
+        await fsUpdate(`channels/${channelId}/tips/${tipId}`, {
+          matches: toValue(updatedMatches),
+          status: toValue(tipStatus),
+        }, token);
 
         if (tipStatus !== 'pending') {
           settled++;
-          console.log(`📝 Tip ${tipDoc.id} → ${tipStatus}`);
-
-          // Update tipster stats
           if (tipsterId) {
-            const userRef = db.collection('users').doc(tipsterId);
-            const userSnap = await userRef.get();
-            if (userSnap.exists) {
-              const userData = userSnap.data();
-              const totalTips = userData.tipsCount || 1;
-              const wonTips = (userData.wonTips || 0) + (tipStatus === 'won' ? 1 : 0);
-              const winRate = Math.round((wonTips / totalTips) * 100);
-              await userRef.update({ winRate, wonTips });
-            }
-          }
-
-          // Notify tipster
-          if (tipsterId) {
-            await db.collection('notifications').add({
-              userId: tipsterId,
-              type: 'tip_result',
-              title: tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost',
-              message: `Your tip in "${channelName}" has been verified as ${tipStatus.toUpperCase()}`,
-              read: false,
-              createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            });
+            await fsAdd('notifications', {
+              userId: toValue(tipsterId),
+              type: toValue('tip_result'),
+              title: toValue(tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost'),
+              message: toValue('Your tip in "' + channelName + '" → ' + tipStatus.toUpperCase()),
+              read: toValue(false),
+              createdAt: { timestampValue: new Date().toISOString() },
+            }, token);
           }
         }
       }
     }
 
-    console.log(`✅ Done. Checked: ${checked}, Settled: ${settled}`);
-    return {
-      statusCode: 200,
-      body: JSON.stringify({ success: true, checked, settled }),
-    };
+    console.log('✅ Done. Checked:', checked, 'Settled:', settled);
+    return { statusCode: 200, body: JSON.stringify({ success: true, checked, settled }) };
 
-  } catch (e) {
+  } catch(e) {
     console.error('❌ Error:', e.message);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: e.message }),
-    };
+    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
   }
 };

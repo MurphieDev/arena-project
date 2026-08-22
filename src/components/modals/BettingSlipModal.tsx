@@ -36,20 +36,42 @@ export function BettingSlipModal({ isOpen, onClose, onSubmit }: BettingSlipModal
         const text = data?.ParsedResults?.[0]?.ParsedText || '';
         const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
         const matches: any[] = [];
-        lines.forEach((line: string) => {
+        
+        // Helper to extract prediction from text near a match
+        const extractPrediction = (text: string): string => {
+          const t = text.toLowerCase();
+          if (/home win|1(?!x|2)\b|home\s*win/.test(t)) return '1';
+          if (/away win|\b2\b|away\s*win/.test(t)) return '2';
+          if (/\bdraw\b|\bx\b/.test(t)) return 'X';
+          if (/1x|home.*draw/.test(t)) return '1X';
+          if (/x2|draw.*away/.test(t)) return 'X2';
+          if (/12|home.*away/.test(t)) return '12';
+          if (/both.*score|btts|gg/.test(t)) return 'GG';
+          if (/no.*both|ng/.test(t)) return 'NG';
+          const over = t.match(/over\s*([\d.]+)/);
+          if (over) return `Over ${over[1]}`;
+          const under = t.match(/under\s*([\d.]+)/);
+          if (under) return `Under ${under[1]}`;
+          return '1'; // Default to home win
+        };
+
+        lines.forEach((line: string, idx: number) => {
           const vsMatch = line.match(/(.+?)\s+(?:vs\.?|v\.?|-)\s+(.+)/i);
           if (vsMatch) {
+            // Look for prediction in same line or nearby lines
+            const context = lines.slice(Math.max(0, idx-1), idx+3).join(' ');
+            const oddsMatch2 = line.match(/([\d.]+)\s*$/);
             matches.push({
               home: vsMatch[1].trim(),
-              away: vsMatch[2].trim(),
-              odds: '',
-              prediction: '',
+              away: vsMatch[2].replace(/[\d.]+$/, '').trim(),
+              odds: oddsMatch2 ? oddsMatch2[1] : '',
+              prediction: extractPrediction(context),
               status: 'pending',
             });
           }
         });
-        const codeMatch = text.match(/(?:booking code|code|ref)[:\s]*([A-Z0-9]{5,})/i);
-        const oddsMatch = text.match(/(?:total odds|odds)[:\s]*([\d.]+)/i);
+        const codeMatch = text.match(/(?:booking code|code|ref|bet id)[:\s]*([A-Z0-9]{5,})/i);
+        const oddsMatch = text.match(/(?:total odds|total|cum|accumulator)[:\s]*([\d.]+)/i);
         setOcrResult({
           matches,
           bookingCode: codeMatch?.[1] || '',
@@ -68,10 +90,18 @@ export function BettingSlipModal({ isOpen, onClose, onSubmit }: BettingSlipModal
 
   const handleSubmit = () => {
     if (!imageBase64) { alert('Please upload a betting slip image'); return; }
+    // Ensure all matches have predictions
+    const matches = (ocrResult?.matches || []).map((m: any) => ({
+      home: m.home || '',
+      away: m.away || '',
+      odds: m.odds || '',
+      prediction: m.prediction || '1',
+      status: 'pending',
+    }));
     onSubmit({
-      imageUrl: imageBase64, // base64 string - safe for Firestore
+      imageUrl: imageBase64,
       caption,
-      matches: ocrResult?.matches || [],
+      matches,
       bookingCode: ocrResult?.bookingCode || '',
       totalOdds: ocrResult?.totalOdds || '',
       platform: 'betslip',
