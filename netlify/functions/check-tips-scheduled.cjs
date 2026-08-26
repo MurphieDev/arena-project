@@ -132,39 +132,38 @@ function teamsMatch(a, b) {
   return wb.some(w => wa.includes(w));
 }
 
-const teamCache = {};
-async function findTeamId(name) {
-  if (!name) return null;
-  const key = normalize(name);
-  if (teamCache[key] !== undefined) return teamCache[key];
-  const results = await apiFootball('/teams?search=' + encodeURIComponent(name));
-  const best = results.find(r => r && r.team && teamsMatch(r.team.name, name)) || results[0];
-  teamCache[key] = (best && best.team) ? best.team.id : null;
-  return teamCache[key];
+// Load all recent fixtures once upfront
+let cachedFixtures = null;
+async function getAllRecentFixtures() {
+  if (cachedFixtures) return cachedFixtures;
+  const today = new Date().toISOString().split('T')[0];
+  const sixtyAgo = new Date(Date.now() - 60 * 86400000).toISOString().split('T')[0];
+  // Get fixtures from top leagues
+  const leagueIds = [39, 140, 135, 78, 61, 2, 3, 1]; // PL, LaLiga, SerieA, Bundesliga, Ligue1, UCL, UEL, WC
+  const promises = leagueIds.map(id =>
+    apiFootball('/fixtures?league=' + id + '&season=2026&from=' + sixtyAgo + '&to=' + today)
+  );
+  const results = await Promise.all(promises);
+  cachedFixtures = results.flat();
+  console.log('Loaded ' + cachedFixtures.length + ' fixtures from top leagues');
+  return cachedFixtures;
 }
 
 async function checkMatch(home, away) {
   if (!home || !away) return { status: 'not_found' };
-  if (home.toLowerCase().includes('srl') || away.toLowerCase().includes('srl')) {
-    return { status: 'void' };
-  }
-  const today = new Date().toISOString().split('T')[0];
-  const monthAgo = new Date(Date.now() - 60 * 86400000).toISOString().split('T')[0];
-  const teamId = await findTeamId(home) || await findTeamId(away);
-  if (!teamId) return { status: 'not_found' };
-  for (const season of [2027, 2026, 2025]) {
-    const fixtures = await apiFootball('/fixtures?team=' + teamId + '&season=' + season + '&from=' + monthAgo + '&to=' + today);
-    for (const f of fixtures) {
-      if (!f || !f.teams) continue;
-      const fh = f.teams.home && f.teams.home.name;
-      const fa = f.teams.away && f.teams.away.name;
-      if (teamsMatch(fh, home) && teamsMatch(fa, away)) {
-        const s = f.fixture && f.fixture.status && f.fixture.status.short;
-        if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home || 0, awayScore: f.goals.away || 0 };
-        if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
-        if (['1H','HT','2H','ET','P'].includes(s)) return { status: 'live' };
-        return { status: 'scheduled' };
-      }
+  
+  const fixtures = await getAllRecentFixtures();
+  
+  for (const f of fixtures) {
+    if (!f || !f.teams) continue;
+    const fh = f.teams.home && f.teams.home.name;
+    const fa = f.teams.away && f.teams.away.name;
+    if (teamsMatch(fh, home) && teamsMatch(fa, away)) {
+      const s = f.fixture && f.fixture.status && f.fixture.status.short;
+      if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home || 0, awayScore: f.goals.away || 0 };
+      if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
+      if (['1H','HT','2H','ET','P'].includes(s)) return { status: 'live' };
+      return { status: 'scheduled' };
     }
   }
   return { status: 'not_found' };
