@@ -97,11 +97,29 @@ function apiFootball(endpoint) {
   });
 }
 
+// Premier League abbreviations
+const TEAM_ABBR = {
+  'bha': 'brighton', 'mci': 'manchester city', 'bur': 'burnley',
+  'liv': 'liverpool', 'mun': 'manchester united', 'bou': 'bournemouth',
+  'bre': 'brentford', 'che': 'chelsea', 'ars': 'arsenal',
+  'for': 'nottingham forest', 'tot': 'tottenham', 'new': 'newcastle',
+  'eve': 'everton', 'whu': 'west ham', 'avl': 'aston villa',
+  'wol': 'wolverhampton', 'cry': 'crystal palace', 'sou': 'southampton',
+  'lei': 'leicester', 'lut': 'luton', 'ful': 'fulham', 'shf': 'sheffield',
+  'nfo': 'nottingham forest', 'mcy': 'manchester city',
+};
+
 function normalize(name) {
   if (!name) return '';
-  return name.toLowerCase()
+  const lower = name.toLowerCase().trim();
+  // Check abbreviation map first
+  if (TEAM_ABBR[lower]) return TEAM_ABBR[lower];
+  // Remove SRL suffix (simulated matches)
+  return lower
+    .replace(/\bsrl\b/g, '')
     .replace(/\bfc\b|\bac\b|\bsc\b|\bcf\b/g, '')
     .replace(/manchester/g, 'man').replace(/united/g, 'utd')
+    .replace(/nottingham forest/g, 'forest')
     .replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 }
 
@@ -128,10 +146,26 @@ async function findTeamId(name) {
 async function checkMatch(home, away) {
   if (!home || !away) return { status: 'not_found' };
   const today = new Date().toISOString().split('T')[0];
-  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
+  const monthAgo = new Date(Date.now() - 60 * 86400000).toISOString().split('T')[0];
   const teamId = await findTeamId(home) || await findTeamId(away);
-  if (!teamId) return { status: 'not_found' };
-  for (const season of [2026, 2025, 2024]) {
+  if (!teamId) {
+    // Try direct fixture search
+    const directSearch = await apiFootball('/fixtures?from=' + monthAgo + '&to=' + today);
+    for (const f of directSearch) {
+      if (!f || !f.teams) continue;
+      const fh = f.teams.home && f.teams.home.name;
+      const fa = f.teams.away && f.teams.away.name;
+      if (teamsMatch(fh, home) && teamsMatch(fa, away)) {
+        const s = f.fixture && f.fixture.status && f.fixture.status.short;
+        if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home || 0, awayScore: f.goals.away || 0 };
+        if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
+        if (['1H','HT','2H','ET','P'].includes(s)) return { status: 'live' };
+        return { status: 'scheduled' };
+      }
+    }
+    return { status: 'not_found' };
+  }
+  for (const season of [2027, 2026, 2025]) {
     const fixtures = await apiFootball('/fixtures?team=' + teamId + '&season=' + season + '&from=' + monthAgo + '&to=' + today);
     for (const f of fixtures) {
       if (!f || !f.teams) continue;
