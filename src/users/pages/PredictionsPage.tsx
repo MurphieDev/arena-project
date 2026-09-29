@@ -190,6 +190,44 @@ function ChannelFeed({ ch, onBack, isTipster = false }: { ch: Channel; onBack: (
   const currentUser = user as any;
   const userId = currentUser?.id || currentUser?.uid || '';
   const [joined, setJoined] = useState(ch.joined);
+  const [liveFeed, setLiveFeed] = useState<FeedPost[]>(ch.feed || []);
+
+  // Real-time tips listener
+  useEffect(() => {
+    if (!ch.id) return;
+    const q = firestoreQuery(collection(db, 'channels', ch.id, 'tips'), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q, snap => {
+      const feed: FeedPost[] = snap.docs.map(d => {
+        const tip = d.data();
+        const matches = (tip.matches || []).map((m: any) => ({
+          home: m.home || '', away: m.away || '', odds: m.odds || '',
+          status: (m.status || 'pending') as 'win' | 'lost' | 'pending',
+          matchTime: m.matchTime || '', prediction: m.prediction || '',
+        }));
+        const date = tip.createdAt?.toDate?.() || new Date();
+        const diff = Math.floor((Date.now() - date.getTime()) / 1000);
+        const time = diff < 3600 ? Math.floor(diff / 60) + 'm ago' : diff < 86400 ? Math.floor(diff / 3600) + 'h ago' : Math.floor(diff / 86400) + 'd ago';
+        return {
+          id: d.id,
+          code: tip.bookingCode || '',
+          time,
+          matches,
+          total: parseFloat(tip.totalOdds || '0'),
+          wins: matches.filter((m: any) => m.status === 'win').length,
+          losses: matches.filter((m: any) => m.status === 'lost').length,
+          pending: matches.filter((m: any) => m.status === 'pending').length,
+          reactions: { like: tip.likesCount || 0, heart: 0, fire: 0, laugh: 0, wow: 0 },
+          likesCount: tip.likesCount || 0,
+          commentsCount: tip.commentsCount || 0,
+          reasoning: tip.reasoning || '',
+          imageUrl: tip.imageUrl || null,
+          source: tip.source || 'manual',
+        };
+      });
+      setLiveFeed(feed);
+    });
+    return () => unsub();
+  }, [ch.id]);
   const [showActionMenu, setShowActionMenu] = useState(false);
   const [message, setMessage] = useState('');
   const [showCreatePredictionModal, setShowCreatePredictionModal] = useState(false);
@@ -326,7 +364,7 @@ function ChannelFeed({ ch, onBack, isTipster = false }: { ch: Channel; onBack: (
           </motion.div>
         )}
 
-        {ch.feed.map((post, i) => {
+        {liveFeed.map((post, i) => {
           const isBlurred = ch.type === 'paid' && !joined && i > 0;
           const matches = post.matches.map(m => ({
             team: `${m.home} vs ${m.away}`,

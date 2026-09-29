@@ -34,46 +34,257 @@ export function BettingSlipModal({ isOpen, onClose, onSubmit }: BettingSlipModal
         });
         const data = await res.json();
         const text = data?.ParsedResults?.[0]?.ParsedText || '';
+        // Sportybet format parser (works for Betking, Bet9ja too)
+        // Format: "Home/Away/Draw   odds" then "Team A vs Team B" then "1X2"
         const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
         const matches: any[] = [];
-        
-        // Helper to extract prediction from text near a match
-        const extractPrediction = (text: string): string => {
-          const t = text.toLowerCase();
-          if (/home win|1(?!x|2)\b|home\s*win/.test(t)) return '1';
-          if (/away win|\b2\b|away\s*win/.test(t)) return '2';
-          if (/\bdraw\b|\bx\b/.test(t)) return 'X';
-          if (/1x|home.*draw/.test(t)) return '1X';
-          if (/x2|draw.*away/.test(t)) return 'X2';
-          if (/12|home.*away/.test(t)) return '12';
-          if (/both.*score|btts|gg/.test(t)) return 'GG';
-          if (/no.*both|ng/.test(t)) return 'NG';
-          const over = t.match(/over\s*([\d.]+)/);
-          if (over) return `Over ${over[1]}`;
-          const under = t.match(/under\s*([\d.]+)/);
-          if (under) return `Under ${under[1]}`;
-          return '1'; // Default to home win
+
+        const normalizePrediction = (pred: string): string => {
+          const p = pred.toLowerCase().trim();
+          if (p === 'home') return '1';
+          if (p === 'away') return '2';
+          if (p === 'draw') return 'X';
+          if (p === 'home/draw' || p === '1x') return '1X';
+          if (p === 'draw/away' || p === 'x2') return 'X2';
+          if (p === 'home/away' || p === '12') return '12';
+          if (p === 'both teams to score' || p === 'yes' || p === 'gg') return 'GG';
+          if (p === 'no' || p === 'ng') return 'NG';
+          const over = p.match(/over\s*([\d.]+)/);
+          if (over) return 'Over ' + over[1];
+          const under = p.match(/under\s*([\d.]+)/);
+          if (under) return 'Under ' + under[1];
+          return pred;
         };
 
-        lines.forEach((line: string, idx: number) => {
-          const vsMatch = line.match(/(.+?)\s+(?:vs\.?|v\.?|-)\s+(.+)/i);
-          if (vsMatch) {
-            // Look for prediction in same line or nearby lines
-            const context = lines.slice(Math.max(0, idx-1), idx+3).join(' ');
-            const oddsMatch2 = line.match(/([\d.]+)\s*$/);
-            matches.push({
-              home: vsMatch[1].trim(),
-              away: vsMatch[2].replace(/[\d.]+$/, '').trim(),
-              odds: oddsMatch2 ? oddsMatch2[1] : '',
-              prediction: extractPrediction(context),
-              status: 'pending',
-            });
+        // Strategy 1: Sportybet pattern
+        // Look for: prediction line → "Team A vs Team B" line
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Check if this line is a prediction keyword (Home, Away, Draw, Over 2.5 etc)
+          const predKeywords = /^(home|away|draw|over|under|both teams|yes|no|gg|ng|1x2|home\/draw|draw\/away|home\/away|\d+[+-]?\s*goals?)$/i;
+          // Extract prediction and odds from line like "Home    1.45" or "Over 2.5    1.30"
+          const predOddsMatch = line.match(/^(home|away|draw|over\s*[\d.]+|under\s*[\d.]+|both teams to score|yes|no|gg|ng|\d+\+?\s*goals?)\s+([\d.]+)$/i);
+          
+          if (predOddsMatch) {
+            const pred = normalizePrediction(predOddsMatch[1]);
+            const odds = predOddsMatch[2];
+            // Next line should be "Team A vs Team B"
+            const nextLine = lines[i + 1] || '';
+            const vsMatch = nextLine.match(/^(.+?)\s+vs\.?\s+(.+)$/i);
+            if (vsMatch) {
+              matches.push({
+                home: vsMatch[1].trim(),
+                away: vsMatch[2].trim(),
+                odds,
+                prediction: pred,
+                status: 'pending',
+              });
+              i += 2; // Skip team line and market line
+              continue;
+            }
           }
+
+          // Check if this line is "Team A vs Team B"
+          const vsMatch = line.match(/^(.+?)\s+vs\.?\s+(.+)$/i);
+          if (vsMatch) {
+            const home = vsMatch[1].trim();
+            const away = vsMatch[2].trim();
+            // Look back for prediction
+            let pred = '1';
+            let odds = '';
+            for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
+              const prevLine = lines[j];
+              const predOddsBack = prevLine.match(/^(home|away|draw|over\s*[\d.]+|under\s*[\d.]+|both teams|yes|no|gg|ng)\s+([\d.]+)$/i);
+              if (predOddsBack) {
+                pred = normalizePrediction(predOddsBack[1]);
+                odds = predOddsBack[2];
+                break;
+              }
+              // Just odds on prev line
+              const justOdds = prevLine.match(/^([\d]{1}\.[\d]+)$/);
+              if (justOdds) odds = justOdds[1];
+            }
+            // Check if already added this match
+            if (!matches.find(m => m.home === home && m.away === away)) {
+              matches.push({ home, away, odds, prediction: pred, status: 'pending' });
+            }
+          }
+        }
+
+        // Strategy 2: Fallback - any "vs" pattern
+        if (matches.length === 0) {
+          const vsPattern = /([A-Za-z][\w\s.\-&']{1,35})\s+vs\.?\s+([A-Za-z][\w\s.\-&']{1,35})/gi;
+          let m;
+          while ((m = vsPattern.exec(text)) !== null) {
+            const home = m[1].trim();
+            const away = m[2].replace(/\s+[\d.]+.*/, '').trim();
+            if (home.length > 2 && away.length > 2) {
+              const context = text.slice(Math.max(0, m.index - 60), m.index + 60);
+              const oddsNear = context.match(/([1-9]\.[\d]{2})/);
+              const predNear = context.match(/\b(home|away|draw|over\s*[\d.]+|under\s*[\d.]+)\b/i);
+              matches.push({
+                home, away,
+                odds: oddsNear ? oddsNear[1] : '',
+                prediction: predNear ? normalizePrediction(predNear[1]) : '1',
+                status: 'pending',
+              });
+            }
+          }
+        }
+
+        const codeMatch = text.match(/(?:booking code|code|ref)[:\s]*([A-Z0-9]{4,15})/i);
+        const oddsMatch = text.match(/(?:total odds|odds)[:\s]*([\d.]+)/i);s {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (data: any) => void;
+}
+
+export function BettingSlipModal({ isOpen, onClose, onSubmit }: BettingSlipModalProps) {
+  const [imageBase64, setImageBase64] = useState<string>('');
+  const [preview, setPreview] = useState('');
+  const [caption, setCaption] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [ocrResult, setOcrResult] = useState<any>(null);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const base64 = event.target?.result as string;
+      setPreview(base64);
+      setImageBase64(base64);
+      // Auto-scan immediately on upload
+      setLoading(true);
+      try {
+        const res = await fetch('/.netlify/functions/ocr-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageBase64: base64 }),
         });
-        const codeMatch = text.match(/(?:booking code|code|ref|bet id)[:\s]*([A-Z0-9]{5,})/i);
-        const oddsMatch = text.match(/(?:total odds|total|cum|accumulator)[:\s]*([\d.]+)/i);
+        const data = await res.json();
+        const text = data?.ParsedResults?.[0]?.ParsedText || '';
+        // Universal OCR parser - handles any betting platform format
+        const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
+        const matches: any[] = [];
+
+        const extractPrediction = (ctx: string): string => {
+          const t = ctx.toLowerCase();
+          const over = t.match(/over\s*([\d.]+)/);
+          if (over) return 'Over ' + over[1];
+          const under = t.match(/under\s*([\d.]+)/);
+          if (under) return 'Under ' + under[1];
+          if (/both teams to score|btts|gg|both score/i.test(t)) return 'GG';
+          if (/home win|home team win/i.test(t)) return '1';
+          if (/away win|away team win/i.test(t)) return '2';
+          if (/draw/i.test(t)) return 'X';
+          if (/1x2.*home|^1$/m.test(t)) return '1';
+          if (/1x2.*away|^2$/m.test(t)) return '2';
+          if (/double chance.*1x|^1x$/im.test(t)) return '1X';
+          if (/double chance.*x2|^x2$/im.test(t)) return 'X2';
+          return '';
+        };
+
+        // Strategy 1: Find "Team A vs Team B" pattern (most common)
+        const vsPattern = /([A-Za-z][\w\s\.\-&']{2,40})\s+(?:vs?\.?|@|-)\s+([A-Za-z][\w\s\.\-&']{2,40})/gi;
+        let vsMatch;
+        while ((vsMatch = vsPattern.exec(text)) !== null) {
+          const home = vsMatch[1].trim();
+          const away = vsMatch[2].trim().replace(/\s+[\d.]{3,}.*/, '');
+          if (home.length < 2 || away.length < 2) continue;
+          if (/^(over|under|draw|home|away|yes|no|gg)$/i.test(home)) continue;
+          const contextStart = Math.max(0, vsMatch.index - 50);
+          const context = text.slice(contextStart, vsMatch.index + vsMatch[0].length + 100);
+          const oddsInContext = context.match(/\b([1-9]\.[\d]{2,3})\b/);
+          matches.push({
+            home,
+            away,
+            odds: oddsInContext ? oddsInContext[1] : '',
+            prediction: extractPrediction(context) || '1',
+            status: 'pending',
+          });
+        }
+
+        // Strategy 2: If no vs found, look for team name pairs (Sportybet, Betking etc)
+        if (matches.length === 0) {
+          const isTeamName = (s: string) => 
+            s.length >= 3 && s.length <= 45 && 
+            /[a-zA-Z]{3,}/.test(s) && 
+            !/^(over|under|draw|home|away|yes|no|full|time|half|score|match|result|booking|code|total|odds|date|sport|league|live|kick|off|period|quarter|set|game|bet|win|lose|void|cashout|selection|market|event|fixture|round|group|stage|final|semi)$/i.test(s);
+          
+          for (let i = 0; i < lines.length; i++) {
+            if (!isTeamName(lines[i])) continue;
+            // Look ahead for another team name within 3 lines
+            for (let j = i + 1; j <= Math.min(i + 3, lines.length - 1); j++) {
+              if (!isTeamName(lines[j])) continue;
+              const context = lines.slice(i, Math.min(i + 6, lines.length)).join(' ');
+              const pred = extractPrediction(context);
+              const oddsMatch2 = context.match(/\b([1-9]\.[\d]{2,3})\b/);
+              if (pred) {
+                matches.push({
+                  home: lines[i],
+                  away: lines[j],
+                  odds: oddsMatch2 ? oddsMatch2[1] : '',
+                  prediction: pred,
+                  status: 'pending',
+                });
+                i = j;
+                break;
+              }
+            }
+          }
+        }
+
+        // Remove duplicates
+        const uniqueMatches = matches.filter((m, idx, arr) => 
+          arr.findIndex(x => x.home === m.home && x.away === m.away) === idx
+        );
+        uniqueMatches.forEach(m => matches.indexOf(m) === -1 || true);
+        matches.splice(0, matches.length, ...uniqueMatches);
+
+        const codeMatch = text.match(/(?:booking|code|ref|bet id|ticket|slip)[:\s#]*([A-Z0-9]{4,15})/i);
+        const oddsMatch = text.match(/(?:total odds|cum|accumulator|potential|poss)[^\d]*([\d]+\.[\d]+)/i);
+        // After extracting matches, try to find fixture IDs from API-Football
+        const today = new Date().toISOString().split('T')[0];
+        const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+        const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+        
+        const enrichedMatches = await Promise.all(matches.map(async (m: any) => {
+          if (!m.home || !m.away) return m;
+          try {
+            // Search fixtures for this match in recent dates
+            for (const date of [today, tomorrow, yesterday]) {
+              const res = await fetch(
+                `https://v3.football.api-sports.io/fixtures?date=${date}`,
+                { headers: { 'x-apisports-key': '71b6bd51ec2a77eee7d4a472b85436f0' } }
+              );
+              const data = await res.json();
+              const fixtures = data.response || [];
+              const match = fixtures.find((f: any) => {
+                const fh = (f.teams?.home?.name || '').toLowerCase();
+                const fa = (f.teams?.away?.name || '').toLowerCase();
+                const mh = m.home.toLowerCase();
+                const ma = m.away.toLowerCase();
+                return (fh.includes(mh) || mh.includes(fh)) && (fa.includes(ma) || ma.includes(fa));
+              });
+              if (match) {
+                return {
+                  ...m,
+                  fixtureId: match.fixture.id,
+                  leagueId: match.league.id,
+                  league: match.league.name,
+                  matchTime: match.fixture.date ? new Date(match.fixture.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+                  home: match.teams.home.name, // Use exact API name
+                  away: match.teams.away.name,
+                };
+              }
+            }
+          } catch(e) {}
+          return m;
+        }));
+
         setOcrResult({
-          matches,
+          matches: enrichedMatches,
           bookingCode: codeMatch?.[1] || '',
           totalOdds: oddsMatch?.[1] || '',
           rawText: text,

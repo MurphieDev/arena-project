@@ -5,6 +5,7 @@ import { cn } from '../../lib/utils';
 
 interface SelectedGame {
   id: string;
+  fixtureId?: number;
   home: string;
   away: string;
   odds: string;
@@ -12,6 +13,10 @@ interface SelectedGame {
   prediction: string;
   league?: string;
   matchTime?: string;
+  leagueId?: number;
+  status?: string;
+  homeScore?: number;
+  awayScore?: number;
 }
 
 interface CreatePredictionModalProps {
@@ -27,6 +32,7 @@ export interface PredictionData {
   totalOdds: string;
   entryFee: 'free' | 'premium';
   premiumPrice?: number;
+  source: 'manual';
 }
 
 const PREDICTIONS = ['1', 'X', '2', '1X', 'X2', '12', 'GG', 'NG', 'Over 1.5', 'Over 2.5', 'Over 3.5', 'Under 1.5', 'Under 2.5', 'Under 3.5'];
@@ -66,12 +72,17 @@ export function CreatePredictionModal({ isOpen, onClose, onSubmit }: CreatePredi
       const fixtures = [...(todayData.response || []), ...(tomorrowData.response || [])];
       setAvailableGames(fixtures.map((f: any) => ({
         id: String(f.fixture?.id),
+        fixtureId: f.fixture?.id,
+        leagueId: f.league?.id,
         home: f.teams?.home?.name || '',
         away: f.teams?.away?.name || '',
         odds: '',
         date: f.fixture?.date?.split('T')[0] || today,
         matchTime: f.fixture?.date ? new Date(f.fixture.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
         league: f.league?.name || '',
+        status: f.fixture?.status?.short || 'NS',
+        homeScore: f.goals?.home ?? null,
+        awayScore: f.goals?.away ?? null,
         prediction: '1',
       })));
       setLoadingGames(false);
@@ -131,6 +142,8 @@ export function CreatePredictionModal({ isOpen, onClose, onSubmit }: CreatePredi
 
     const matches: SelectedGame[] = games.map(g => ({
       id: g.id,
+      fixtureId: g.fixtureId || null,
+      leagueId: g.leagueId || null,
       home: g.home,
       away: g.away,
       odds: g.odds || '',
@@ -148,6 +161,7 @@ export function CreatePredictionModal({ isOpen, onClose, onSubmit }: CreatePredi
       totalOdds: calculateTotalOdds(),
       entryFee,
       premiumPrice: entryFee === 'premium' ? premiumPrice : undefined,
+      source: 'manual',
     });
 
     setGames([]);

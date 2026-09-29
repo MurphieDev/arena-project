@@ -149,7 +149,25 @@ async function getAllRecentFixtures() {
   return cachedFixtures;
 }
 
-async function checkMatch(home, away) {
+async function checkMatchById(fixtureId) {
+  if (!fixtureId) return null;
+  const results = await apiFootball('/fixtures?id=' + fixtureId);
+  const f = results[0];
+  if (!f) return null;
+  const s = f.fixture && f.fixture.status && f.fixture.status.short;
+  const elapsed = f.fixture?.status?.elapsed || 0;
+  if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home || 0, awayScore: f.goals.away || 0, elapsed: 90 };
+  if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
+  if (['1H','HT','2H','ET','P','BT'].includes(s)) return { status: 'live', elapsed, homeScore: f.goals.home || 0, awayScore: f.goals.away || 0 };
+  if (s === 'NS') return { status: 'scheduled', matchTime: f.fixture?.date };
+  return { status: 'not_found' };
+}
+
+async function checkMatch(home, away, fixtureId) {
+  if (fixtureId) {
+    const result = await checkMatchById(fixtureId);
+    if (result) return result;
+  }
   if (!home || !away) return { status: 'not_found' };
   
   const fixtures = await getAllRecentFixtures();
@@ -259,14 +277,25 @@ exports.handler = async function(event) {
           const home = match.home || '';
           const away = match.away || '';
           const pred = match.prediction || tipData.prediction || '';
+          const fixtureId = match.fixtureId || null;
 
-          console.log('Checking: "' + home + '" vs "' + away + '"');
-          const result = await checkMatch(home, away);
+          console.log('Checking: "' + home + '" vs "' + away + '" (fixtureId: ' + fixtureId + ')');
+          const result = await checkMatch(home, away, fixtureId);
           console.log('Result:', result.status);
 
-          if (['pending','not_found','live','scheduled'].includes(result.status)) {
+          if (['pending','not_found','scheduled'].includes(result.status)) {
             allSettled = false;
             updatedMatches.push(match);
+            continue;
+          }
+          if (result.status === 'live') {
+            allSettled = false;
+            updatedMatches.push(Object.assign({}, match, {
+              currentHomeScore: result.homeScore,
+              currentAwayScore: result.awayScore,
+              elapsed: result.elapsed,
+              isLive: true,
+            }));
             continue;
           }
 

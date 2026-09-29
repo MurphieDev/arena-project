@@ -140,19 +140,45 @@ async function getAllRecentFixtures() {
   const sixtyAgo = new Date(Date.now() - 60 * 86400000).toISOString().split('T')[0];
   // Get fixtures from top leagues
   const leagueIds = [39, 140, 135, 78, 61, 2, 3, 1]; // PL, LaLiga, SerieA, Bundesliga, Ligue1, UCL, UEL, WC
-  const promises = leagueIds.map(id =>
-    apiFootball('/fixtures?league=' + id + '&season=2026&from=' + sixtyAgo + '&to=' + today)
-  );
+  const promises = [
+    ...leagueIds.map(id => apiFootball('/fixtures?league=' + id + '&season=2026&from=' + sixtyAgo + '&to=' + today)),
+    ...leagueIds.map(id => apiFootball('/fixtures?league=' + id + '&season=2025&from=' + sixtyAgo + '&to=' + today)),
+  ];
   const results = await Promise.all(promises);
   cachedFixtures = results.flat();
   console.log('Loaded ' + cachedFixtures.length + ' fixtures from top leagues');
   return cachedFixtures;
 }
 
-async function checkMatch(home, away) {
+async function checkMatchById(fixtureId) {
+  if (!fixtureId) return null;
+  const results = await apiFootball('/fixtures?id=' + fixtureId);
+  const f = results[0];
+  if (!f) return null;
+  const s = f.fixture && f.fixture.status && f.fixture.status.short;
+  const elapsed = f.fixture?.status?.elapsed || 0;
+  if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home || 0, awayScore: f.goals.away || 0, elapsed: 90 };
+  if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
+  if (['1H','HT','2H','ET','P','BT'].includes(s)) return { status: 'live', elapsed, homeScore: f.goals.home || 0, awayScore: f.goals.away || 0 };
+  if (s === 'NS') return { status: 'scheduled', matchTime: f.fixture?.date };
+  return { status: 'not_found' };
+}
+
+async function checkMatch(home, away, fixtureId) {
+  // Use fixtureId for fast, reliable lookup
+  if (fixtureId) {
+    const result = await checkMatchById(fixtureId);
+    if (result) return result;
+  }
   if (!home || !away) return { status: 'not_found' };
   
   const fixtures = await getAllRecentFixtures();
+  
+  console.log('Searching for: "' + home + '" vs "' + away + '" in ' + fixtures.length + ' fixtures');
+  // Log first 5 fixture names to debug
+  fixtures.slice(0, 3).forEach(f => {
+    if (f && f.teams) console.log('  Sample: ' + f.teams.home.name + ' vs ' + f.teams.away.name);
+  });
   
   for (const f of fixtures) {
     if (!f || !f.teams) continue;
@@ -267,14 +293,26 @@ exports.handler = async function(event) {
           const home = match.home || '';
           const away = match.away || '';
           const pred = match.prediction || tipData.prediction || '';
+          const fixtureId = match.fixtureId || null;
 
-          console.log('Checking: "' + home + '" vs "' + away + '"');
-          const result = await checkMatch(home, away);
+          console.log('Checking: "' + home + '" vs "' + away + '" (fixtureId: ' + fixtureId + ')');
+          const result = await checkMatch(home, away, fixtureId);
           console.log('Result:', result.status);
 
-          if (['pending','not_found','live','scheduled'].includes(result.status)) {
+          if (['pending','not_found','scheduled'].includes(result.status)) {
             allSettled = false;
             updatedMatches.push(match);
+            continue;
+          }
+          if (result.status === 'live') {
+            allSettled = false;
+            // Update with live scores for display
+            updatedMatches.push(Object.assign({}, match, {
+              currentHomeScore: result.homeScore,
+              currentAwayScore: result.awayScore,
+              elapsed: result.elapsed,
+              isLive: true,
+            }));
             continue;
           }
 
@@ -292,6 +330,7 @@ exports.handler = async function(event) {
               status: newStatus,
               homeScore: result.homeScore,
               awayScore: result.awayScore,
+              verified: true,
             }));
             console.log('✅ ' + home + ' ' + result.homeScore + '-' + result.awayScore + ' ' + away + ' → ' + newStatus);
           }
