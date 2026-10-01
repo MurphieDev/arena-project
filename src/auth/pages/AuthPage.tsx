@@ -237,9 +237,11 @@ export function AuthPage() {
   const [socialLoading, setSocialLoading] = useState<'google' | 'apple' | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [form, setForm] = useState({
-    name: '', email: '', password: '', confirmPassword: '',
+    firstName: '', lastName: '', username: '', email: '',
+    password: '', confirmPassword: '', dob: '',
     bio: '', experience: '', channelName: '',
   });
+  const [isAdult, setIsAdult] = useState(false);
 
   const update = (field: string, value: string) => {
     setForm(f => ({ ...f, [field]: value }));
@@ -271,12 +273,21 @@ export function AuthPage() {
 
   const validateSignUp = () => {
     const e: Record<string, string> = {};
-    if (!form.name.trim()) e.name = 'Full name is required';
+    if (!form.firstName.trim()) e.firstName = 'First name is required';
+    if (!form.lastName.trim()) e.lastName = 'Last name is required';
+    if (!form.username.trim()) e.username = 'Username is required';
+    else if (form.username.includes(' ')) e.username = 'No spaces in username';
+    if (!form.dob) e.dob = 'Date of birth is required';
+    else {
+      const age = Math.floor((Date.now() - new Date(form.dob).getTime()) / (1000 * 60 * 60 * 24 * 365));
+      if (age < 18) e.dob = 'You must be 18 or older to use Arena';
+    }
     if (!form.email) e.email = 'Email is required';
     else if (!/\S+@\S+\.\S+/.test(form.email)) e.email = 'Enter a valid email';
     if (!form.password) e.password = 'Password is required';
     else if (form.password.length < 8) e.password = 'At least 8 characters';
     if (form.password !== form.confirmPassword) e.confirmPassword = 'Passwords do not match';
+    if (!isAdult) e.isAdult = 'You must confirm you are 18 or older';
     if (!policyAccepted) e.policyAccepted = 'You must agree to the Terms and Privacy Policy';
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -306,7 +317,13 @@ export function AuthPage() {
     if (!validateSignUp()) return;
     try {
       setLoading(true);
-      await signup(form.email, form.password, form.name, 'user', policyAccepted, policyAccepted, 'v1.0');
+      const fullName = `${form.firstName.trim()} ${form.lastName.trim()}`;
+      await signup(form.email, form.password, fullName, 'user', policyAccepted, policyAccepted, 'v1.0', {
+        firstName: form.firstName.trim(),
+        lastName: form.lastName.trim(),
+        username: form.username.trim().toLowerCase(),
+        dob: form.dob,
+      });
       navigate('/');
     } catch (err: any) {
       if (err.code === 'auth/email-already-in-use') {
@@ -646,14 +663,21 @@ export function AuthPage() {
                   </div>
 
                   <div className="space-y-3">
-                    <FloatingInput
-                      icon={User}
-                      placeholder="Full name"
-                      value={form.name}
-                      onChange={v => update('name', v)}
-                      error={errors.name}
-                      autoComplete="name"
-                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <FloatingInput icon={User} placeholder="First name" value={form.firstName}
+                        onChange={v => update('firstName', v)} error={errors.firstName} />
+                      <FloatingInput icon={User} placeholder="Last name" value={form.lastName}
+                        onChange={v => update('lastName', v)} error={errors.lastName} />
+                    </div>
+                    <FloatingInput icon={AtSign} placeholder="Username (no spaces)" value={form.username}
+                      onChange={v => update('username', v.replace(/\s/g, ''))} error={errors.username} />
+                    <div>
+                      <label className="text-xs text-[#71767b] font-semibold mb-1 block">Date of Birth</label>
+                      <input type="date" value={form.dob} onChange={e => update('dob', e.target.value)}
+                        max={new Date(Date.now() - 18 * 365.25 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}
+                        className="w-full bg-[#0f0f11] border border-[#2a2a30] rounded-2xl px-4 py-3 text-white outline-none focus:border-[#ef4444]/50 transition-all text-sm" />
+                      {errors.dob && <p className="text-xs text-[#ef4444] mt-1">{errors.dob}</p>}
+                    </div>
                     <FloatingInput
                       icon={Mail}
                       type="email"
@@ -925,7 +949,7 @@ export function AuthPage() {
                         )}
 
                         <div className="space-y-3">
-                          <FloatingInput icon={User} placeholder="Full name" value={form.name} onChange={v => update('name', v)} error={errors.name} autoComplete="name" />
+                          <FloatingInput icon={User} placeholder="Full name" value={`${form.firstName} ${form.lastName}`.trim()} onChange={v => update('name', v)} error={errors.name} autoComplete="name" />
                           <FloatingInput icon={Mail} type="email" placeholder="Email address" value={form.email} onChange={v => update('email', v)} error={errors.email} autoComplete="email" />
                           <FloatingInput icon={Zap} placeholder="Channel name (e.g. GoldTips VIP)" value={form.channelName} onChange={v => update('channelName', v)} error={errors.channelName} />
                           <FloatingInput
