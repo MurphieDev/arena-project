@@ -5,7 +5,7 @@ import {
   Mail, Lock, User, Eye, EyeOff, ArrowRight, Zap, Trophy,
   ChevronRight, Check, ArrowLeft, AlertCircle, Loader2,
   Star, TrendingUp, Shield, Users
-} from 'lucide-react';
+, AtSign } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useAuth } from '../hooks/AuthContext';
 import { db } from '../../lib/firebase';
@@ -237,7 +237,7 @@ export function AuthPage() {
   const [socialLoading, setSocialLoading] = useState<'google' | 'apple' | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [form, setForm] = useState({
-    firstName: '', lastName: '', username: '', email: '',
+    name: '', firstName: '', lastName: '', username: '', email: '',
     password: '', confirmPassword: '', dob: '',
     bio: '', experience: '', channelName: '',
   });
@@ -359,7 +359,6 @@ export function AuthPage() {
 
   const handleTipsterSubmit = async () => {
     const e: Record<string, string> = {};
-    if (!form.name.trim()) e.name = 'Full name is required';
     if (!form.email) e.email = 'Email is required';
     else if (!/\S+@\S+\.\S+/.test(form.email)) e.email = 'Enter a valid email';
     if (!form.channelName.trim()) e.channelName = 'Channel name is required';
@@ -371,7 +370,7 @@ export function AuthPage() {
       await signup(
         form.email,
         form.password,
-        form.name,
+        `${form.firstName.trim()} ${form.lastName.trim()}`,
         'tipster',
         true,
         true,
