@@ -162,6 +162,13 @@ export function BettingSlipModal({ isOpen, onClose, onSubmit }: BettingSlipModal
                 return (fh.includes(mh) || mh.includes(fh)) && (fa.includes(ma) || ma.includes(fa));
               });
               if (fixture) {
+                const fixtureDate = fixture.fixture.date ? new Date(fixture.fixture.date) : null;
+                const matchTime = fixtureDate 
+                  ? fixtureDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
+                  : '';
+                const matchDateStr = fixtureDate
+                  ? fixtureDate.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })
+                  : '';
                 return {
                   ...m,
                   fixtureId: fixture.fixture.id,
@@ -169,9 +176,9 @@ export function BettingSlipModal({ isOpen, onClose, onSubmit }: BettingSlipModal
                   league: fixture.league.name,
                   home: fixture.teams.home.name,
                   away: fixture.teams.away.name,
-                  matchTime: fixture.fixture.date
-                    ? new Date(fixture.fixture.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                    : '',
+                  matchTime,
+                  matchDate: matchDateStr,
+                  status: fixture.fixture.status?.short || 'NS',
                 };
               }
             }

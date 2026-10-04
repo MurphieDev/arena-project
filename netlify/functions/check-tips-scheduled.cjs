@@ -1,192 +1,207 @@
 'use strict';
-
 const https = require('https');
 
-// Use Firebase REST API with Web API Key instead of Admin SDK
-const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'sport-x-af95c';
 const WEB_API_KEY = process.env.FIREBASE_TOKEN || 'AIzaSyDaegUsnDK9H1D0_r5Hnf-IAaCUqBT-BU4';
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
+const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'sport-x-af95c';
+const VERIFY_EMAIL = process.env.VERIFY_EMAIL || 'tipverify@arena.app';
+const VERIFY_PASSWORD = process.env.VERIFY_PASSWORD || 'ArenaVerify2026!';
 
-function request(options, body) {
+// ── HTTP helper ────────────────────────────────────────────────
+function req(options, body) {
   return new Promise((resolve, reject) => {
-    const req = https.request(options, res => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
-        catch { resolve({ status: res.statusCode, data: {} }); }
-      });
+    const r = https.request(options, res => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve({}); } });
     });
-    req.on('error', reject);
-    if (body) req.write(typeof body === 'string' ? body : JSON.stringify(body));
-    req.end();
+    r.on('error', reject);
+    r.setTimeout(10000, () => { r.destroy(); resolve({}); });
+    if (body) r.write(typeof body === 'string' ? body : JSON.stringify(body));
+    r.end();
   });
 }
 
-// Sign in with email/password to get auth token
-async function getAuthToken() {
-  const email = process.env.VERIFY_EMAIL || 'tipverify@arena.app';
-  const password = process.env.VERIFY_PASSWORD || 'ArenaVerify2026!';
-  
-  const res = await request({
+// ── Firebase Auth ──────────────────────────────────────────────
+async function getToken() {
+  const body = JSON.stringify({ email: VERIFY_EMAIL, password: VERIFY_PASSWORD, returnSecureToken: true });
+  const res = await req({
     hostname: 'identitytoolkit.googleapis.com',
     path: `/v1/accounts:signInWithPassword?key=${WEB_API_KEY}`,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' }
-  }, { email, password, returnSecureToken: true });
-  
-  if (res.data.idToken) return res.data.idToken;
-  throw new Error('Failed to get auth token: ' + JSON.stringify(res.data));
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  }, body);
+  if (!res.idToken) throw new Error('Auth failed: ' + JSON.stringify(res));
+  return res.idToken;
 }
 
-// Firestore REST
-const FS_BASE = `/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-
-async function fsGet(path, token) {
-  const res = await request({
-    hostname: 'firestore.googleapis.com',
-    path: `${FS_BASE}/${path}`,
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  return res.data;
-}
+// ── Firestore helpers ──────────────────────────────────────────
+const FS = `/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
 
 async function fsList(path, token) {
-  const res = await request({
+  const res = await req({
     hostname: 'firestore.googleapis.com',
-    path: `${FS_BASE}/${path}?pageSize=300`,
+    path: `${FS}/${path}?pageSize=300`,
     headers: { Authorization: `Bearer ${token}` }
   });
-  return res.data;
+  return res.documents || [];
 }
 
-async function fsUpdate(path, fields, token) {
-  const fieldMask = Object.keys(fields).map(k => `updateMask.fieldPaths=${k}`).join('&');
-  const res = await request({
+async function fsPatch(path, fields, token) {
+  const mask = Object.keys(fields).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
+  const body = JSON.stringify({ fields });
+  return req({
     hostname: 'firestore.googleapis.com',
-    path: `${FS_BASE}/${path}?${fieldMask}`,
+    path: `${FS}/${path}?${mask}`,
     method: 'PATCH',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-  }, { fields });
-  return res.data;
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  }, body);
 }
 
 async function fsAdd(path, fields, token) {
-  const res = await request({
+  const body = JSON.stringify({ fields });
+  return req({
     hostname: 'firestore.googleapis.com',
-    path: `${FS_BASE}/${path}`,
+    path: `${FS}/${path}`,
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-  }, { fields });
-  return res.data;
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  }, body);
 }
 
-function apiFootball(endpoint) {
+// ── Firestore value helpers ────────────────────────────────────
+function tv(v) {
+  if (v === null || v === undefined) return { nullValue: null };
+  if (typeof v === 'boolean') return { booleanValue: v };
+  if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+  if (typeof v === 'string') return { stringValue: v };
+  if (Array.isArray(v)) return { arrayValue: { values: v.map(tv) } };
+  if (typeof v === 'object') return { mapValue: { fields: Object.fromEntries(Object.entries(v).map(([k, val]) => [k, tv(val)])) } };
+  return { stringValue: String(v) };
+}
+
+function fv(v) {
+  if (!v) return null;
+  if ('stringValue' in v) return v.stringValue;
+  if ('integerValue' in v) return parseInt(v.integerValue);
+  if ('doubleValue' in v) return v.doubleValue;
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('nullValue' in v) return null;
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fv);
+  if ('mapValue' in v) return Object.fromEntries(Object.entries(v.mapValue.fields || {}).map(([k, val]) => [k, fv(val)]));
+  return null;
+}
+
+function fromDoc(doc) {
+  if (!doc || !doc.fields) return {};
+  return Object.fromEntries(Object.entries(doc.fields).map(([k, v]) => [k, fv(v)]));
+}
+
+// ── API Football ───────────────────────────────────────────────
+function apiFootball(path) {
   return new Promise(resolve => {
-    const req = https.request({
+    const r = https.request({
       hostname: 'v3.football.api-sports.io',
-      path: endpoint,
+      path,
       headers: { 'x-apisports-key': API_FOOTBALL_KEY }
     }, res => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => { try { resolve(JSON.parse(data).response || []); } catch { resolve([]); } });
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => { try { resolve(JSON.parse(d).response || []); } catch { resolve([]); } });
     });
-    req.on('error', () => resolve([]));
-    req.end();
+    r.on('error', () => resolve([]));
+    r.setTimeout(9000, () => { r.destroy(); resolve([]); });
+    r.end();
   });
 }
 
-// Premier League abbreviations
-const TEAM_ABBR = {
-  'bha': 'brighton', 'mci': 'manchester city', 'bur': 'burnley',
-  'liv': 'liverpool', 'mun': 'manchester united', 'bou': 'bournemouth',
-  'bre': 'brentford', 'che': 'chelsea', 'ars': 'arsenal',
-  'for': 'nottingham forest', 'tot': 'tottenham', 'new': 'newcastle',
-  'eve': 'everton', 'whu': 'west ham', 'avl': 'aston villa',
-  'wol': 'wolverhampton', 'cry': 'crystal palace', 'sou': 'southampton',
-  'lei': 'leicester', 'lut': 'luton', 'ful': 'fulham', 'shf': 'sheffield',
-  'nfo': 'nottingham forest', 'mcy': 'manchester city',
+// ── Team matching ──────────────────────────────────────────────
+const ABBR = {
+  'bha': 'brighton', 'mci': 'manchester city', 'bur': 'burnley', 'liv': 'liverpool',
+  'mun': 'manchester united', 'bou': 'bournemouth', 'bre': 'brentford', 'che': 'chelsea',
+  'ars': 'arsenal', 'for': 'nottingham forest', 'tot': 'tottenham', 'new': 'newcastle',
+  'eve': 'everton', 'whu': 'west ham', 'avl': 'aston villa', 'wol': 'wolves',
+  'cry': 'crystal palace', 'sou': 'southampton', 'lei': 'leicester', 'ful': 'fulham',
+  'nfo': 'nottingham forest', 'mcy': 'manchester city', 'forrest': 'nottingham forest',
 };
 
-function normalize(name) {
-  if (!name) return '';
-  const lower = name.toLowerCase().trim();
-  // Check abbreviation map first
-  if (TEAM_ABBR[lower]) return TEAM_ABBR[lower];
-  // Remove SRL suffix (simulated matches)
-  return lower
-    .replace(/\bsrl\b/g, '')
-    .replace(/\bfc\b|\bac\b|\bsc\b|\bcf\b/g, '')
-    .replace(/manchester/g, 'man').replace(/united/g, 'utd')
-    .replace(/nottingham forest/g, 'forest')
-    .replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+function norm(s) {
+  if (!s) return '';
+  const lower = s.toLowerCase().trim();
+  if (ABBR[lower]) return ABBR[lower];
+  return lower.replace(/\bfc\b|\bac\b|\bsc\b|\bcf\b/g, '').replace(/\s+/g, ' ').trim();
 }
 
-function teamsMatch(a, b) {
-  const na = normalize(a), nb = normalize(b);
+function teamMatch(a, b) {
+  const na = norm(a), nb = norm(b);
   if (!na || !nb) return false;
   if (na === nb || na.includes(nb) || nb.includes(na)) return true;
   const wa = na.split(' ').filter(w => w.length > 2);
   const wb = nb.split(' ').filter(w => w.length > 2);
-  return wb.some(w => wa.includes(w));
+  return wa.length > 0 && wb.length > 0 && wb.some(w => wa.includes(w));
 }
 
-// Load all recent fixtures once upfront
-let cachedFixtures = null;
-async function getAllRecentFixtures() {
-  if (cachedFixtures) return cachedFixtures;
+// ── Check a single match ───────────────────────────────────────
+async function checkMatch(home, away, fixtureId) {
+  // Method 1: Direct fixture lookup by ID (most reliable)
+  if (fixtureId) {
+    const res = await apiFootball(`/fixtures?id=${fixtureId}`);
+    if (res.length > 0) {
+      const f = res[0];
+      const s = f.fixture?.status?.short;
+      const h = f.goals?.home ?? 0, a = f.goals?.away ?? 0;
+      const elapsed = f.fixture?.status?.elapsed || 0;
+      if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: h, awayScore: a };
+      if (['1H','HT','2H','ET','P','BT'].includes(s)) return { status: 'live', homeScore: h, awayScore: a, elapsed };
+      if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
+      return { status: 'scheduled', date: f.fixture?.date };
+    }
+  }
+
+  // Method 2: Search by team name
   const today = new Date().toISOString().split('T')[0];
   const sixtyAgo = new Date(Date.now() - 60 * 86400000).toISOString().split('T')[0];
-  // Get fixtures from top leagues
-  const leagueIds = [39, 140, 135, 78, 61, 2, 3, 1]; // PL, LaLiga, SerieA, Bundesliga, Ligue1, UCL, UEL, WC
-  const promises = leagueIds.map(id =>
-    apiFootball('/fixtures?league=' + id + '&season=2026&from=' + sixtyAgo + '&to=' + today)
-  );
-  const results = await Promise.all(promises);
-  cachedFixtures = results.flat();
-  console.log('Loaded ' + cachedFixtures.length + ' fixtures from top leagues');
-  return cachedFixtures;
-}
 
-async function checkMatchById(fixtureId) {
-  if (!fixtureId) return null;
-  const results = await apiFootball('/fixtures?id=' + fixtureId);
-  const f = results[0];
-  if (!f) return null;
-  const s = f.fixture && f.fixture.status && f.fixture.status.short;
-  const elapsed = f.fixture?.status?.elapsed || 0;
-  if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home || 0, awayScore: f.goals.away || 0, elapsed: 90 };
-  if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
-  if (['1H','HT','2H','ET','P','BT'].includes(s)) return { status: 'live', elapsed, homeScore: f.goals.home || 0, awayScore: f.goals.away || 0 };
-  if (s === 'NS') return { status: 'scheduled', matchTime: f.fixture?.date };
-  return { status: 'not_found' };
-}
-
-async function checkMatch(home, away, fixtureId) {
-  if (fixtureId) {
-    const result = await checkMatchById(fixtureId);
-    if (result) return result;
+  // Try searching for the home team
+  const teamRes = await apiFootball(`/teams?search=${encodeURIComponent(home.slice(0, 15))}`);
+  const team = teamRes.find((t) => teamMatch(t?.team?.name, home));
+  
+  if (!team?.team?.id) {
+    // Try away team
+    const awayRes = await apiFootball(`/teams?search=${encodeURIComponent(away.slice(0, 15))}`);
+    const awayTeam = awayRes.find((t) => teamMatch(t?.team?.name, away));
+    if (!awayTeam?.team?.id) return { status: 'not_found' };
+    
+    for (const season of [2026, 2025]) {
+      const fixtures = await apiFootball(`/fixtures?team=${awayTeam.team.id}&season=${season}&from=${sixtyAgo}&to=${today}`);
+      for (const f of fixtures) {
+        if (teamMatch(f.teams?.home?.name, home) && teamMatch(f.teams?.away?.name, away)) {
+          const s = f.fixture?.status?.short;
+          if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home||0, awayScore: f.goals.away||0 };
+          if (['1H','HT','2H','ET','P'].includes(s)) return { status: 'live', homeScore: f.goals.home||0, awayScore: f.goals.away||0, elapsed: f.fixture?.status?.elapsed||0 };
+          if (['CANC','PST'].includes(s)) return { status: 'void' };
+          return { status: 'scheduled', date: f.fixture?.date };
+        }
+      }
+    }
+    return { status: 'not_found' };
   }
-  if (!home || !away) return { status: 'not_found' };
-  
-  const fixtures = await getAllRecentFixtures();
-  
-  for (const f of fixtures) {
-    if (!f || !f.teams) continue;
-    const fh = f.teams.home && f.teams.home.name;
-    const fa = f.teams.away && f.teams.away.name;
-    if (teamsMatch(fh, home) && teamsMatch(fa, away)) {
-      const s = f.fixture && f.fixture.status && f.fixture.status.short;
-      if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home || 0, awayScore: f.goals.away || 0 };
-      if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
-      if (['1H','HT','2H','ET','P'].includes(s)) return { status: 'live' };
-      return { status: 'scheduled' };
+
+  for (const season of [2026, 2025]) {
+    const fixtures = await apiFootball(`/fixtures?team=${team.team.id}&season=${season}&from=${sixtyAgo}&to=${today}`);
+    for (const f of fixtures) {
+      if (teamMatch(f.teams?.home?.name, home) && teamMatch(f.teams?.away?.name, away)) {
+        const s = f.fixture?.status?.short;
+        if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home||0, awayScore: f.goals.away||0 };
+        if (['1H','HT','2H','ET','P'].includes(s)) return { status: 'live', homeScore: f.goals.home||0, awayScore: f.goals.away||0, elapsed: f.fixture?.status?.elapsed||0 };
+        if (['CANC','PST'].includes(s)) return { status: 'void' };
+        return { status: 'scheduled', date: f.fixture?.date };
+      }
     }
   }
   return { status: 'not_found' };
 }
 
+// ── Evaluate prediction ────────────────────────────────────────
 function evaluate(pred, h, a) {
   const p = (pred || '').toLowerCase().trim();
   if (!p) return null;
@@ -197,144 +212,107 @@ function evaluate(pred, h, a) {
   if (p === 'x2') return a >= h;
   if (p === '12') return h !== a;
   if (p === 'gg' || p === 'btts') return h > 0 && a > 0;
-  const over = p.match(/^over\s*([\d.]+)/);
+  if (p === 'ng') return h === 0 || a === 0;
+  const over = p.match(/over\s*([\d.]+)/);
   if (over) return (h + a) > parseFloat(over[1]);
-  const under = p.match(/^under\s*([\d.]+)/);
+  const under = p.match(/under\s*([\d.]+)/);
   if (under) return (h + a) < parseFloat(under[1]);
   return null;
 }
 
-function toValue(v) {
-  if (v === null || v === undefined) return { nullValue: null };
-  if (typeof v === 'boolean') return { booleanValue: v };
-  if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
-  if (typeof v === 'string') return { stringValue: v };
-  if (Array.isArray(v)) return { arrayValue: { values: v.map(toValue) } };
-  if (typeof v === 'object') return { mapValue: { fields: Object.fromEntries(Object.entries(v).map(([k, val]) => [k, toValue(val)])) } };
-  return { stringValue: String(v) };
-}
-
-function fromValue(v) {
-  if (!v) return null;
-  if ('stringValue' in v) return v.stringValue;
-  if ('integerValue' in v) return parseInt(v.integerValue);
-  if ('doubleValue' in v) return v.doubleValue;
-  if ('booleanValue' in v) return v.booleanValue;
-  if ('nullValue' in v) return null;
-  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fromValue);
-  if ('mapValue' in v) return Object.fromEntries(Object.entries(v.mapValue.fields || {}).map(([k, val]) => [k, fromValue(val)]));
-  return null;
-}
-
-function fromDoc(doc) {
-  if (!doc || !doc.fields) return {};
-  return Object.fromEntries(Object.entries(doc.fields).map(([k, v]) => [k, fromValue(v)]));
-}
-
+// ── Main ───────────────────────────────────────────────────────
 exports.handler = async function(event) {
   try {
-    console.log('🔄 Getting auth token...');
-    const token = await getAuthToken();
-    console.log('✅ Got token');
+    console.log('🔄 Tip verification started:', new Date().toISOString());
+    const token = await getToken();
+    console.log('✅ Auth OK');
 
     let checked = 0, settled = 0;
 
-    const channelsRes = await fsList('channels', token);
-    const channels = channelsRes.documents || [];
-    console.log('📡 Channels found:', channels.length);
+    const channels = await fsList('channels', token);
+    console.log('📡 Channels:', channels.length);
 
-    for (const channelDoc of channels) {
-      const channelId = channelDoc.name.split('/').pop();
-      const channelData = fromDoc(channelDoc);
-      const channelName = channelData.name || channelId;
-      const tipsterId = channelData.ownerId || '';
+    for (const ch of channels) {
+      const chId = ch.name.split('/').pop();
+      const chData = fromDoc(ch);
+      const chName = chData.name || chId;
+      const tipsterId = chData.ownerId || '';
 
-      const tipsRes = await fsList(`channels/${channelId}/tips`, token);
-      const pendingTips = (tipsRes.documents || []).filter(t => fromDoc(t).status === 'pending');
+      const tips = await fsList(`channels/${chId}/tips`, token);
+      const pending = tips.filter(t => fromDoc(t).status === 'pending');
+      if (!pending.length) continue;
 
-      if (!pendingTips.length) continue;
-      console.log('Channel "' + channelName + '": ' + pendingTips.length + ' pending tips');
+      console.log(`Channel "${chName}": ${pending.length} pending`);
 
-      for (const tipDoc of pendingTips) {
-        const tipId = tipDoc.name.split('/').pop();
-        const tipData = fromDoc(tipDoc);
+      for (const tip of pending) {
+        const tipId = tip.name.split('/').pop();
+        const tipData = fromDoc(tip);
         const matches = tipData.matches || [];
         if (!matches.length) continue;
 
         checked++;
-        let allSettled = true;
-        let anyLost = false;
-        const updatedMatches = [];
+        let allSettled = true, anyLost = false;
+        const updated = [];
 
         for (const match of matches) {
-          const currentStatus = match.status || 'pending';
-          if (['win','lost','void'].includes(currentStatus)) {
-            if (currentStatus === 'lost') anyLost = true;
-            updatedMatches.push(match);
+          const st = match.status || 'pending';
+          if (['win','lost','void'].includes(st)) {
+            if (st === 'lost') anyLost = true;
+            updated.push(match);
             continue;
           }
 
           const home = match.home || '';
           const away = match.away || '';
           const pred = match.prediction || tipData.prediction || '';
-          const fixtureId = match.fixtureId || null;
+          const fId = match.fixtureId || null;
 
-          console.log('Checking: "' + home + '" vs "' + away + '" (fixtureId: ' + fixtureId + ')');
-          const result = await checkMatch(home, away, fixtureId);
-          console.log('Result:', result.status);
+          console.log(`  "${home}" vs "${away}" (fixtureId:${fId})`);
+          const result = await checkMatch(home, away, fId);
+          console.log(`  → ${result.status}`);
 
-          if (['pending','not_found','scheduled'].includes(result.status)) {
+          if (result.status === 'not_found' || result.status === 'scheduled') {
             allSettled = false;
-            updatedMatches.push(match);
+            updated.push(Object.assign({}, match, result.status === 'scheduled' ? { matchDate: result.date } : {}));
             continue;
           }
           if (result.status === 'live') {
             allSettled = false;
-            updatedMatches.push(Object.assign({}, match, {
-              currentHomeScore: result.homeScore,
-              currentAwayScore: result.awayScore,
-              elapsed: result.elapsed,
-              isLive: true,
-            }));
+            updated.push(Object.assign({}, match, { isLive: true, currentHomeScore: result.homeScore, currentAwayScore: result.awayScore, elapsed: result.elapsed }));
             continue;
           }
-
           if (result.status === 'void') {
-            updatedMatches.push(Object.assign({}, match, { status: 'void' }));
+            updated.push(Object.assign({}, match, { status: 'void' }));
             continue;
           }
-
           if (result.status === 'finished') {
             const won = evaluate(pred, result.homeScore, result.awayScore);
-            if (won === null) { allSettled = false; updatedMatches.push(match); continue; }
-            const newStatus = won ? 'win' : 'lost';
+            if (won === null) { allSettled = false; updated.push(match); continue; }
+            const ns = won ? 'win' : 'lost';
             if (!won) anyLost = true;
-            updatedMatches.push(Object.assign({}, match, {
-              status: newStatus,
-              homeScore: result.homeScore,
-              awayScore: result.awayScore,
-            }));
-            console.log('✅ ' + home + ' ' + result.homeScore + '-' + result.awayScore + ' ' + away + ' → ' + newStatus);
+            updated.push(Object.assign({}, match, { status: ns, homeScore: result.homeScore, awayScore: result.awayScore }));
+            console.log(`  ✅ ${home} ${result.homeScore}-${result.awayScore} ${away} → ${ns}`);
           }
         }
 
         if (anyLost) allSettled = true;
         const tipStatus = allSettled ? (anyLost ? 'lost' : 'won') : 'pending';
 
-        await fsUpdate(`channels/${channelId}/tips/${tipId}`, {
-          matches: toValue(updatedMatches),
-          status: toValue(tipStatus),
+        await fsPatch(`channels/${chId}/tips/${tipId}`, {
+          matches: tv(updated),
+          status: tv(tipStatus),
         }, token);
 
         if (tipStatus !== 'pending') {
           settled++;
+          console.log(`📝 Tip ${tipId} → ${tipStatus}`);
           if (tipsterId) {
             await fsAdd('notifications', {
-              userId: toValue(tipsterId),
-              type: toValue('tip_result'),
-              title: toValue(tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost'),
-              message: toValue('Your tip in "' + channelName + '" → ' + tipStatus.toUpperCase()),
-              read: toValue(false),
+              userId: tv(tipsterId),
+              type: tv('tip_result'),
+              title: tv(tipStatus === 'won' ? '✅ Tip Won!' : '❌ Tip Lost'),
+              message: tv(`Your tip in "${chName}" → ${tipStatus.toUpperCase()}`),
+              read: tv(false),
               createdAt: { timestampValue: new Date().toISOString() },
             }, token);
           }
@@ -342,9 +320,8 @@ exports.handler = async function(event) {
       }
     }
 
-    console.log('✅ Done. Checked:', checked, 'Settled:', settled);
+    console.log(`✅ Done. Checked: ${checked}, Settled: ${settled}`);
     return { statusCode: 200, body: JSON.stringify({ success: true, checked, settled }) };
-
   } catch(e) {
     console.error('❌ Error:', e.message);
     return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
