@@ -141,7 +141,7 @@ function teamMatch(a, b) {
 }
 
 // ── Check a single match ───────────────────────────────────────
-async function checkMatch(home, away, fixtureId) {
+async function checkMatch(home, away, fixtureId, matchDate) {
   // Method 1: Direct fixture lookup by ID (most reliable)
   if (fixtureId) {
     const res = await apiFootball(`/fixtures?id=${fixtureId}`);
@@ -149,115 +149,67 @@ async function checkMatch(home, away, fixtureId) {
       const f = res[0];
       const s = f.fixture?.status?.short;
       const h = f.goals?.home ?? 0, a = f.goals?.away ?? 0;
-      const elapsed = f.fixture?.status?.elapsed || 0;
       if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: h, awayScore: a };
-      if (['1H','HT','2H','ET','P','BT'].includes(s)) return { status: 'live', homeScore: h, awayScore: a, elapsed };
+      if (['1H','HT','2H','ET','P','BT'].includes(s)) return { status: 'live', homeScore: h, awayScore: a, elapsed: f.fixture?.status?.elapsed||0 };
       if (['CANC','PST','ABD'].includes(s)) return { status: 'void' };
       return { status: 'scheduled', date: f.fixture?.date };
     }
   }
 
-  // Method 2: Search by team name
+  // Method 2: Search by date range - no team search needed
   const today = new Date().toISOString().split('T')[0];
   const sixtyAgo = new Date(Date.now() - 60 * 86400000).toISOString().split('T')[0];
-
-  // Try searching for the home team
-  const homeQuery = encodeURIComponent(home.slice(0, 20));
-  console.log(`  [API] Searching team: "${home}" → /teams?search=${homeQuery}`);
-  const teamRes = await apiFootball(`/teams?search=${homeQuery}`);
-  console.log(`  [API] Found ${teamRes.length} teams for "${home}":`, teamRes.slice(0,3).map(t => t?.team?.name).join(', '));
-  
-  // Prefer exact match, avoid women's/U23/U21/reserve teams unless explicitly in query
-  const isWomens = /\bw\b|women|female/i.test(home);
-  const isYouth = /u\d{2}|youth|junior|reserve/i.test(home);
-  
-  let team = teamRes.find(t => {
-    const n = t?.team?.name || '';
-    // Exact match first
-    return norm(n) === norm(home);
-  });
-  
-  if (!team) {
-    team = teamRes.find(t => {
-      const n = t?.team?.name || '';
-      // Skip women's unless searching for women's team
-      if (!isWomens && /\bw\b|women|female/i.test(n)) return false;
-      // Skip youth unless searching for youth
-      if (!isYouth && /u\d{2}|youth|junior|reserve/i.test(n)) return false;
-      return teamMatch(n, home);
-    });
-  }
-  
-  if (!team) team = teamRes.find(t => teamMatch(t?.team?.name, home));
-  console.log(`  [API] Best match: ${team?.team?.name} (id:${team?.team?.id})`);
-  
-  if (!team?.team?.id) {
-    // Try away team
-    const awayRes = await apiFootball(`/teams?search=${encodeURIComponent(away.slice(0, 20))}`);
-    const isAwayWomens = /\bw\b|women/i.test(away);
-    let awayTeam = awayRes.find(t => norm(t?.team?.name) === norm(away));
-    if (!awayTeam) awayTeam = awayRes.find(t => {
-      const n = t?.team?.name || '';
-      if (!isAwayWomens && /\bw\b|women/i.test(n)) return false;
-      return teamMatch(n, away);
-    });
-    if (!awayTeam) awayTeam = awayRes.find(t => teamMatch(t?.team?.name, away));
-    console.log(`  [API] Away team: ${awayTeam?.team?.name} (id:${awayTeam?.team?.id})`);
-    if (!awayTeam?.team?.id) return { status: 'not_found' };
-    
-    for (const season of ['', 2026, 2025]) {
-      const thirtyAhead2 = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
-      const seasonParam = season ? `&season=${season}` : '';
-      const fixtures = await apiFootball(`/fixtures?team=${awayTeam.team.id}${seasonParam}&from=${sixtyAgo}&to=${thirtyAhead2}`);
-      console.log(`  [API] Away team season ${season||'none'}: ${fixtures.length} fixtures`);
-      for (const f of fixtures) {
-        if (teamMatch(f.teams?.home?.name, home) && teamMatch(f.teams?.away?.name, away)) {
-          const s = f.fixture?.status?.short;
-          if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home||0, awayScore: f.goals.away||0 };
-          if (['1H','HT','2H','ET','P'].includes(s)) return { status: 'live', homeScore: f.goals.home||0, awayScore: f.goals.away||0, elapsed: f.fixture?.status?.elapsed||0 };
-          if (['CANC','PST'].includes(s)) return { status: 'void' };
-          return { status: 'scheduled', date: f.fixture?.date };
-        }
-      }
-    }
-    return { status: 'not_found' };
-  }
-
   const thirtyAhead = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
   
-  // Search WITHOUT season filter - works for all competitions including internationals
-  const fixtures = await apiFootball(`/fixtures?team=${team.team.id}&from=${sixtyAgo}&to=${thirtyAhead}`);
-  console.log(`  [API] No-season search: ${fixtures.length} fixtures for team ${team.team.id}`);
-  if (fixtures.length > 0) {
-    console.log(`  [API] Sample:`, fixtures.slice(0,5).map(f => `${f.teams?.home?.name} vs ${f.teams?.away?.name} (${f.fixture?.status?.short})`).join(' | '));
+  // If we have a match date, search that specific date first
+  const datesToCheck = [];
+  if (matchDate) {
+    const d = new Date(matchDate).toISOString().split('T')[0];
+    datesToCheck.push(d);
+    // Also check day before and after in case of timezone differences
+    datesToCheck.push(new Date(new Date(matchDate).getTime() + 86400000).toISOString().split('T')[0]);
+    datesToCheck.push(new Date(new Date(matchDate).getTime() - 86400000).toISOString().split('T')[0]);
   }
   
-  for (const f of fixtures) {
-    if (teamMatch(f.teams?.home?.name, home) && teamMatch(f.teams?.away?.name, away)) {
-      console.log(`  [MATCH FOUND] ${f.teams?.home?.name} vs ${f.teams?.away?.name} status:${f.fixture?.status?.short}`);
-      const s = f.fixture?.status?.short;
-      if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home||0, awayScore: f.goals.away||0 };
-      if (['1H','HT','2H','ET','P'].includes(s)) return { status: 'live', homeScore: f.goals.home||0, awayScore: f.goals.away||0, elapsed: f.fixture?.status?.elapsed||0 };
-      if (['CANC','PST'].includes(s)) return { status: 'void' };
-      return { status: 'scheduled', date: f.fixture?.date };
-    }
+  // Generate date list for last 60 days + next 30 days
+  const allDates = [];
+  for (let i = -60; i <= 30; i++) {
+    allDates.push(new Date(Date.now() + i * 86400000).toISOString().split('T')[0]);
   }
   
-  // If still not found, try with season
-  for (const season of [2026, 2025, 2024]) {
-    const sf = await apiFootball(`/fixtures?team=${team.team.id}&season=${season}&from=${sixtyAgo}&to=${thirtyAhead}`);
-    console.log(`  [API] Season ${season}: ${sf.length} fixtures`);
-    for (const f of sf) {
+  // Check specific dates first, then broader range
+  const checkDates = datesToCheck.length > 0 ? datesToCheck : [today];
+  
+  // First try specific dates
+  for (const date of checkDates) {
+    const fixtures = await apiFootball(`/fixtures?date=${date}`);
+    console.log(`  [API] Date ${date}: ${fixtures.length} fixtures`);
+    for (const f of fixtures) {
       if (teamMatch(f.teams?.home?.name, home) && teamMatch(f.teams?.away?.name, away)) {
-        console.log(`  [MATCH FOUND season] ${f.teams?.home?.name} vs ${f.teams?.away?.name}`);
         const s = f.fixture?.status?.short;
+        console.log(`  [FOUND] ${f.teams.home.name} vs ${f.teams.away.name} (${s})`);
         if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home||0, awayScore: f.goals.away||0 };
-        if (['1H','HT','2H','ET','P'].includes(s)) return { status: 'live', homeScore: f.goals.home||0, awayScore: f.goals.away||0, elapsed: f.fixture?.status?.elapsed||0 };
+        if (['1H','HT','2H','ET','P','BT'].includes(s)) return { status: 'live', homeScore: f.goals.home||0, awayScore: f.goals.away||0, elapsed: f.fixture?.status?.elapsed||0 };
         if (['CANC','PST'].includes(s)) return { status: 'void' };
         return { status: 'scheduled', date: f.fixture?.date };
       }
     }
   }
+  
+  // Then try from/to range
+  const fixtures = await apiFootball(`/fixtures?from=${sixtyAgo}&to=${thirtyAhead}`);
+  console.log(`  [API] Range search: ${fixtures.length} fixtures`);
+  for (const f of fixtures) {
+    if (teamMatch(f.teams?.home?.name, home) && teamMatch(f.teams?.away?.name, away)) {
+      const s = f.fixture?.status?.short;
+      console.log(`  [FOUND] ${f.teams.home.name} vs ${f.teams.away.name} (${s})`);
+      if (['FT','AET','PEN'].includes(s)) return { status: 'finished', homeScore: f.goals.home||0, awayScore: f.goals.away||0 };
+      if (['1H','HT','2H','ET','P','BT'].includes(s)) return { status: 'live', homeScore: f.goals.home||0, awayScore: f.goals.away||0, elapsed: f.fixture?.status?.elapsed||0 };
+      if (['CANC','PST'].includes(s)) return { status: 'void' };
+      return { status: 'scheduled', date: f.fixture?.date };
+    }
+  }
+  
   return { status: 'not_found' };
 }
 
@@ -286,6 +238,7 @@ exports.handler = async function(event) {
     console.log('🔄 Tip verification started:', new Date().toISOString());
     const token = await getToken();
     console.log('✅ Auth OK');
+
 
     let checked = 0, settled = 0;
 
@@ -328,7 +281,7 @@ exports.handler = async function(event) {
           const fId = match.fixtureId || null;
 
           console.log(`  "${home}" vs "${away}" (fixtureId:${fId})`);
-          const result = await checkMatch(home, away, fId);
+          const result = await checkMatch(home, away, fId, match.matchDate || match.date || null);
           console.log(`  → ${result.status}`);
 
           if (result.status === 'not_found' || result.status === 'scheduled') {
